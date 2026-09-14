@@ -32,8 +32,9 @@ public sealed class ContributionCalendarTests
         Assert.Null(section.Error);
         Assert.False(section.IsStale);
         AssertOtherSectionsLoaded(snapshot);
-        Assert.Equal(5, api.Endpoints.Count);
+        Assert.Equal(6, api.Endpoints.Count);
         Assert.Equal("user", api.Endpoints[0]);
+        Assert.Equal("user", api.Endpoints[^1]);
         Assert.Equal(
             "queryContributionCalendar{viewer{logincontributionsCollection{contributionCalendar{totalContributionsweeks{firstDaycontributionDays{dateweekdaycontributionCountcontributionLevel}}}}}}",
             string.Concat(Assert.Single(api.Queries).Where(character => !char.IsWhiteSpace(character))));
@@ -151,21 +152,18 @@ public sealed class ContributionCalendarTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ViewerMismatchNeverPublishesAnotherAccountsCalendar(bool hasPrevious)
+    public async Task ViewerMismatchRejectsTheWholeRefreshEvenWhenRestIdentityIsUnchanged(bool hasPrevious)
     {
         var api = new FakeApi();
         var service = new DashboardService(api);
         var previous = hasPrevious ? await service.RefreshAsync() : null;
         api.Response = ContributionTestData.Response("other-viewer", allZero: true).ToJsonString();
 
-        var snapshot = await service.RefreshAsync(previous);
+        var error = await Assert.ThrowsAsync<GitHubAccountChangedException>(() => service.RefreshAsync(previous));
 
-        Assert.Same(previous?.Contributions.Calendar, snapshot.Contributions.Calendar);
-        Assert.Equal(previous?.Contributions.UpdatedAt, snapshot.Contributions.UpdatedAt);
-        Assert.Equal(hasPrevious, snapshot.Contributions.IsStale);
         Assert.Equal("The GitHub account changed while loading contributions. Refresh again to load the current account.",
-            snapshot.Contributions.Error);
-        AssertOtherSectionsLoaded(snapshot);
+            error.Message);
+        Assert.Equal("octocat", api.Login);
     }
 
     [Fact]

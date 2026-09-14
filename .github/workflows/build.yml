@@ -38,6 +38,9 @@ jobs:
       - name: Restore WinUI app
         run: dotnet restore .\src\GitHubTray.App\GitHubTray.App.csproj -p:Platform=x64
 
+      - name: Check runtime identifier selection
+        run: .\scripts\Test-RuntimeIdentifiers.ps1
+
       - name: Build WinUI app
         run: dotnet build .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Debug --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
 

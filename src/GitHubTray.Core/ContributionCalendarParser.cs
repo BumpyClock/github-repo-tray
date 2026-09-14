@@ -45,7 +45,7 @@ internal static class ContributionCalendarParser
         var viewer = root.GetProperty("data").GetProperty("viewer");
         if (!string.Equals(viewer.GetProperty("login").GetString(), expectedLogin, StringComparison.OrdinalIgnoreCase))
         {
-            throw new GitHubException("The GitHub account changed while loading contributions. Refresh again to load the current account.");
+            throw new GitHubAccountChangedException("The GitHub account changed while loading contributions. Refresh again to load the current account.");
         }
         var calendar = viewer.GetProperty("contributionsCollection").GetProperty("contributionCalendar");
         var total = calendar.GetProperty("totalContributions").GetInt32();

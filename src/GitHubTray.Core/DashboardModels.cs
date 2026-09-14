@@ -34,8 +34,10 @@ public interface IGitHubApi
     Task<string> QueryAsync(string query, CancellationToken cancellationToken = default);
 }
 
-public sealed class GitHubException(string message, Exception? innerException = null)
+public class GitHubException(string message, Exception? innerException = null)
     : Exception(message, innerException);
+
+public sealed class GitHubAccountChangedException(string message) : GitHubException(message);
 
 public sealed record AppSettings(int RefreshMinutes = 5)
 {

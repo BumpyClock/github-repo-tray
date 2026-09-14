@@ -38,7 +38,10 @@ milestone. The app currently uses the official WinUI template's placeholder icon
 | `GitHubTray.Core.Tests` | Deterministic response fixtures; no live authentication or network dependency. |
 
 The UI owns one current snapshot and prevents overlapping refreshes. A refresh
-resolves `/user` before requesting account-specific data. Individual section
+resolves `/user` before requesting account-specific data and verifies the account
+again before publishing the completed snapshot. A detected account change,
+including a mismatched GraphQL viewer, rejects the entire refresh rather than
+mixing data under the original account label. Individual section
 failures keep that section's last successful items and timestamp, clearly marked
 as stale. A different account invalidates the previous snapshot's cached sections.
 An identity lookup failure is an error, not a successful empty dashboard.

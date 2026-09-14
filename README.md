@@ -71,10 +71,13 @@ Use **Quit** to stop the app rather than merely close its panel.
 
 ```powershell
 dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj
+.\scripts\Test-RuntimeIdentifiers.ps1
 ```
 
 The core tests use deterministic fixtures and temporary settings files. They do
 not require GitHub authentication or make network requests.
+The runtime checks verify x86/x64/ARM64 selection without machine-local publish
+profiles, including preservation of an explicitly supplied runtime identifier.
 
 ## Port plan
 

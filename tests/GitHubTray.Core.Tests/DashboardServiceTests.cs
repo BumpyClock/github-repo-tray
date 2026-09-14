@@ -80,6 +80,51 @@ public sealed class DashboardServiceTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AccountChangeDuringRefreshRejectsTheEntireSnapshot(bool hasPrevious)
+    {
+        var api = new FakeApi();
+        var service = new DashboardService(api);
+        var previous = hasPrevious ? await service.RefreshAsync() : null;
+        api.AfterQuery = () => api.Login = "different-account";
+
+        var error = await Assert.ThrowsAsync<GitHubAccountChangedException>(() => service.RefreshAsync(previous));
+
+        Assert.Contains("account changed during refresh", error.Message);
+        Assert.Equal("user", api.Endpoints[^1]);
+        if (previous is not null)
+        {
+            Assert.Equal("octocat", previous.User.Login);
+        }
+    }
+
+    [Fact]
+    public async Task FailedFinalAccountCheckDoesNotPublishFetchedSections()
+    {
+        var api = new FakeApi();
+        api.AfterQuery = () => api.FailUser = true;
+
+        await Assert.ThrowsAsync<GitHubException>(() => new DashboardService(api).RefreshAsync());
+
+        Assert.Equal(2, api.Endpoints.Count(endpoint => endpoint == "user"));
+        Assert.Equal("user", api.Endpoints[^1]);
+    }
+
+    [Fact]
+    public async Task FinalAccountCheckAcceptsCaseOnlyLoginChanges()
+    {
+        var api = new FakeApi();
+        api.AfterQuery = () => api.Login = "OCTOCAT";
+
+        var snapshot = await new DashboardService(api).RefreshAsync();
+
+        Assert.Equal("octocat", snapshot.User.Login);
+        Assert.Single(snapshot.Repositories.Items);
+        Assert.Equal(2, api.Endpoints.Count(endpoint => endpoint == "user"));
+    }
+
+    [Theory]
     [InlineData("not-json")]
     [InlineData("{}")]
     [InlineData("""{"login":"invalid/user","html_url":"https://github.com/user"}""")]
@@ -167,6 +212,27 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
+    public async Task NewestEventsBeyondTheInputLimitAreRetained()
+    {
+        var api = new FakeApi
+        {
+            ActivityResponse = JsonSerializer.Serialize(Enumerable.Range(0, 40).Select(index => new
+            {
+                id = index.ToString(),
+                type = "PublicEvent",
+                repo = new { name = "org/repo" },
+                payload = new { },
+                created_at = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero).AddMinutes(index)
+            }))
+        };
+
+        var snapshot = await new DashboardService(api).RefreshAsync();
+
+        Assert.Equal(Enumerable.Range(10, 30).Reverse().Select(index => index.ToString()),
+            snapshot.Activity.Items.Select(item => item.Id));
+    }
+
+    [Fact]
     public async Task IncompleteSearchResultsDoNotSilentlyReplaceTheLastCompleteResults()
     {
         var api = new FakeApi();
@@ -206,6 +272,7 @@ public sealed class DashboardServiceTests
         public bool FailUser { get; set; }
         public bool FailActivity { get; set; }
         public bool IncompleteSearch { get; set; }
+        public Action? AfterQuery { get; set; }
         public string PullUrl { get; set; } = "https://github.com/octocat/tray/pull/42";
         public string ActivityResponse { get; set; } =
             """[{"id":"1","type":"PushEvent","repo":{"name":"octocat/tray"},"payload":{"ref":"refs/heads/main"},"created_at":"2026-09-01T09:30:00Z"}]""";
@@ -213,7 +280,9 @@ public sealed class DashboardServiceTests
         public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(ContributionTestData.Response(Login).ToJsonString());
+            var response = ContributionTestData.Response(Login).ToJsonString();
+            AfterQuery?.Invoke();
+            return Task.FromResult(response);
         }
 
         public Task<string> GetAsync(string endpoint, CancellationToken cancellationToken = default)

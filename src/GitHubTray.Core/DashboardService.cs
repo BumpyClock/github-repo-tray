@@ -30,6 +30,11 @@ public sealed class DashboardService(IGitHubApi api)
             ParseRepositories, previous?.Repositories, cancellationToken);
         var contributions = LoadContributionsAsync(user.Login, previous?.Contributions, cancellationToken);
         await Task.WhenAll(activity, authored, reviews, repositories, contributions).ConfigureAwait(false);
+        var verifiedUser = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(user.Login, verifiedUser.Login, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GitHubAccountChangedException("The GitHub account changed during refresh. No new data was displayed. Refresh again to load the current account.");
+        }
         return new DashboardSnapshot(user, await activity, await authored, await reviews, await repositories)
         {
             Contributions = await contributions
@@ -50,7 +55,7 @@ public sealed class DashboardService(IGitHubApi api)
                 document.RootElement, login, DateOnly.FromDateTime(DateTime.UtcNow));
             return new ContributionSection(calendar, DateTimeOffset.UtcNow, null);
         }
-        catch (GitHubException exception)
+        catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
         {
             return new ContributionSection(previous?.Calendar, previous?.UpdatedAt, exception.Message);
         }
@@ -146,8 +151,8 @@ public sealed class DashboardService(IGitHubApi api)
     }
 
     private static IReadOnlyList<DashboardItem> ParseActivity(JsonElement root) =>
-        root.EnumerateArray().Take(ItemLimit).Select(ParseEvent)
-            .OrderByDescending(item => item.UpdatedAt).ToArray();
+        root.EnumerateArray().Select(ParseEvent)
+            .OrderByDescending(item => item.UpdatedAt).Take(ItemLimit).ToArray();
 
     private static DashboardItem ParseEvent(JsonElement item)
     {
