@@ -16,6 +16,7 @@ namespace GitHubTray_App;
 
 public sealed partial class MainWindow : Window
 {
+    private const string WindowFrameError = "Windows could not remove the native window outline.";
     private readonly MainPage _page;
     private readonly DispatcherQueueTimer _dismissTimer;
     private TrayIcon? _trayIcon;
@@ -41,7 +42,7 @@ public sealed partial class MainWindow : Window
         presenter.IsAlwaysOnTop = true;
         var cornerPreference = 2; // DWMWCP_ROUND; unsupported systems retain native square corners.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 33, ref cornerPreference, sizeof(int));
-        var borderColor = -2; // DWMWA_COLOR_NONE: the XAML surface supplies a theme-aware outline.
+        var borderColor = -2; // DWMWA_COLOR_NONE: keep the native frame borderless.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 34, ref borderColor, sizeof(int));
         ConfigureBackdrop();
         AppWindow.IsShownInSwitchers = false;
@@ -100,6 +101,19 @@ public sealed partial class MainWindow : Window
         AppWindow.Show();
         NativeMethods.SetForegroundWindow(WindowHandle);
         Activate();
+        try
+        {
+            WindowFrame.RemoveDialogFrame(WindowHandle);
+            if (ViewModel.ActionError == WindowFrameError)
+            {
+                ViewModel.ActionError = "";
+            }
+        }
+        catch (Win32Exception exception)
+        {
+            Debug.WriteLine($"Native window frame update failed: {exception}");
+            ViewModel.ActionError = WindowFrameError;
+        }
         if (showSettings)
         {
             _page.OpenSettings();

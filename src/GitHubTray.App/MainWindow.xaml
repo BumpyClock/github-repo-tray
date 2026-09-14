@@ -7,8 +7,6 @@
     <Grid>
         <Border x:Name="FallbackSurface"
                 Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" />
-        <Border x:Name="PageHost" CornerRadius="{ThemeResource OverlayCornerRadius}"
-                BorderThickness="1"
-                BorderBrush="{ThemeResource SurfaceStrokeColorFlyoutBrush}" />
+        <Border x:Name="PageHost" CornerRadius="{ThemeResource OverlayCornerRadius}" />
     </Grid>
 </Window>

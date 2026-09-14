@@ -7,6 +7,16 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll")]
     internal static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    internal static extern int GetWindowLong(nint window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    internal static extern int SetWindowLong(nint window, int index, int value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(nint window, nint insertAfter, int x, int y, int width, int height, uint flags);
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate nint WindowProcedure(nint window, uint message, nuint wParam, nint lParam);
 
