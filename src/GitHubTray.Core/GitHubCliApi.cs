@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace GitHubTray.Core;
 
@@ -28,6 +29,18 @@ public sealed class GitHubCliApi : IGitHubApi
             throw new ArgumentException("A relative GitHub API endpoint is required.", nameof(endpoint));
         }
 
+        return await ExecuteAsync(endpoint, "GET", null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
+    {
+        ValidateQuery(query);
+        return await ExecuteAsync("graphql", "POST", query, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string> ExecuteAsync(
+        string endpoint, string method, string? query, CancellationToken cancellationToken)
+    {
         var startInfo = _createStartInfo();
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;
@@ -37,12 +50,17 @@ public sealed class GitHubCliApi : IGitHubApi
         startInfo.StandardErrorEncoding = Encoding.UTF8;
         foreach (var argument in new[]
         {
-            "api", "--hostname", "github.com", "--method", "GET",
+            "api", "--hostname", "github.com", "--method", method,
             "--header", "Accept: application/vnd.github+json",
             "--header", "X-GitHub-Api-Version: 2022-11-28", endpoint
         })
         {
             startInfo.ArgumentList.Add(argument);
+        }
+        if (query is not null)
+        {
+            startInfo.ArgumentList.Add("--raw-field");
+            startInfo.ArgumentList.Add($"query={query}");
         }
 
         startInfo.Environment["GH_PROMPT_DISABLED"] = "1";
@@ -99,6 +117,52 @@ public sealed class GitHubCliApi : IGitHubApi
             throw new GitHubException(DescribeFailure(error));
         }
         return output;
+    }
+
+    private static void ValidateQuery(string query)
+    {
+        const string message = "A single read-only GraphQL query without arguments or variables is required.";
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            throw new ArgumentException(message, nameof(query));
+        }
+        var document = query.Trim();
+        var selectionStart = document.IndexOf('{');
+        if (selectionStart < 0 ||
+            (selectionStart > 0 && !Regex.IsMatch(document[..selectionStart].Trim(),
+                @"\Aquery(?:\s+[_A-Za-z][_0-9A-Za-z]*)?\z", RegexOptions.CultureInvariant)))
+        {
+            throw new ArgumentException(message, nameof(query));
+        }
+
+        // This boundary only needs field selections, not general GraphQL documents.
+        // Excluding arguments, directives, fragments, and additional operations makes mutations impossible.
+        var depth = 0;
+        for (var index = selectionStart; index < document.Length; index++)
+        {
+            var character = document[index];
+            if (character == '{')
+            {
+                depth++;
+            }
+            else if (character == '}')
+            {
+                depth--;
+                if (depth < 0 || (depth == 0 && index != document.Length - 1))
+                {
+                    throw new ArgumentException(message, nameof(query));
+                }
+            }
+            else if (!char.IsAsciiLetterOrDigit(character) && character != '_' &&
+                     character != ',' && !char.IsWhiteSpace(character))
+            {
+                throw new ArgumentException(message, nameof(query));
+            }
+        }
+        if (depth != 0)
+        {
+            throw new ArgumentException(message, nameof(query));
+        }
     }
 
     private static string DescribeFailure(string error)

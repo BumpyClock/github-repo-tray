@@ -28,12 +28,39 @@ public sealed class DashboardService(IGitHubApi api)
         var repositories = LoadSectionAsync(
             $"user/repos?sort=pushed&direction=desc&per_page={ItemLimit}&affiliation=owner,collaborator,organization_member",
             ParseRepositories, previous?.Repositories, cancellationToken);
-        await Task.WhenAll(activity, authored, reviews, repositories).ConfigureAwait(false);
-        return new DashboardSnapshot(user, await activity, await authored, await reviews, await repositories);
+        var contributions = LoadContributionsAsync(user.Login, previous?.Contributions, cancellationToken);
+        await Task.WhenAll(activity, authored, reviews, repositories, contributions).ConfigureAwait(false);
+        return new DashboardSnapshot(user, await activity, await authored, await reviews, await repositories)
+        {
+            Contributions = await contributions
+        };
     }
 
     private static string SearchEndpoint(string query) =>
         $"search/issues?q={Uri.EscapeDataString(query)}&sort=updated&order=desc&per_page={ItemLimit}";
+
+    private async Task<ContributionSection> LoadContributionsAsync(
+        string login, ContributionSection? previous, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var json = await api.QueryAsync(ContributionCalendarParser.Query, cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(json);
+            var calendar = ContributionCalendarParser.Parse(
+                document.RootElement, login, DateOnly.FromDateTime(DateTime.UtcNow));
+            return new ContributionSection(calendar, DateTimeOffset.UtcNow, null);
+        }
+        catch (GitHubException exception)
+        {
+            return new ContributionSection(previous?.Calendar, previous?.UpdatedAt, exception.Message);
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException or
+                                         InvalidOperationException or KeyNotFoundException or OverflowException)
+        {
+            return new ContributionSection(previous?.Calendar, previous?.UpdatedAt,
+                "GitHub returned an unexpected contribution calendar. Refresh again or update GitHub Tray if this persists.");
+        }
+    }
 
     private async Task<DashboardSection> LoadSectionAsync(
         string endpoint,

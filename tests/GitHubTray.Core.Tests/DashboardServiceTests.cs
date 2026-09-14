@@ -210,6 +210,12 @@ public sealed class DashboardServiceTests
         public string ActivityResponse { get; set; } =
             """[{"id":"1","type":"PushEvent","repo":{"name":"octocat/tray"},"payload":{"ref":"refs/heads/main"},"created_at":"2026-09-01T09:30:00Z"}]""";
 
+        public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(ContributionTestData.Response(Login).ToJsonString());
+        }
+
         public Task<string> GetAsync(string endpoint, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();

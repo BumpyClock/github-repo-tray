@@ -31,6 +31,7 @@ public sealed record DashboardSnapshot(
 public interface IGitHubApi
 {
     Task<string> GetAsync(string endpoint, CancellationToken cancellationToken = default);
+    Task<string> QueryAsync(string query, CancellationToken cancellationToken = default);
 }
 
 public sealed class GitHubException(string message, Exception? innerException = null)
