@@ -107,12 +107,19 @@ public sealed partial class DashboardViewModel : ObservableObject
     private readonly SettingsStore _settingsStore;
     private readonly DispatcherQueueTimer _refreshTimer;
     private readonly DispatcherQueueTimer _clockTimer;
+    private readonly DispatcherQueueTimer _preferenceSaveTimer;
     private readonly CancellationTokenSource _lifetime = new();
     // Redraw marker only; the session owns published-data eligibility and recovery.
     private DashboardSnapshot? _lastProjectedSnapshot;
     private Task? _initializeTask;
     private Task? _saveTask;
-    private int _refreshMinutes = 5;
+    private Task? _shutdownTask;
+    private AppSettings _committedSettings = new();
+    private ContributionCellSizePreset _contributionCellSize = ContributionCellSizePreset.Medium;
+    private int? _pendingRefreshMinutes;
+    private bool _isPreferenceSaveReady;
+    private bool _canAutoSaveSettings;
+    private string _settingsSaveWarning = "";
     private bool _isShuttingDown;
 
     public DashboardViewModel(DashboardRefreshSession refreshSession, SettingsStore settingsStore, DispatcherQueue dispatcher)
@@ -128,14 +135,20 @@ public sealed partial class DashboardViewModel : ObservableObject
         ];
         SelectedSection = Sections[0];
         _refreshTimer = dispatcher.CreateTimer();
-        _refreshTimer.Interval = TimeSpan.FromMinutes(_refreshMinutes);
+        _refreshTimer.Interval = TimeSpan.FromMinutes(_committedSettings.RefreshMinutes);
         _refreshTimer.Tick += OnRefreshTimerTick;
         _clockTimer = dispatcher.CreateTimer();
         _clockTimer.Interval = TimeSpan.FromMinutes(1);
         _clockTimer.Tick += OnClockTimerTick;
+        _preferenceSaveTimer = dispatcher.CreateTimer();
+        _preferenceSaveTimer.Interval = TimeSpan.FromMilliseconds(300);
+        _preferenceSaveTimer.IsRepeating = false;
+        _preferenceSaveTimer.Tick += OnPreferenceSaveTimerTick;
     }
 
     public IReadOnlyList<SectionViewModel> Sections { get; }
+    public IReadOnlyList<ContributionCellSizePreset> ContributionCellSizes { get; } =
+        Array.AsReadOnly(Enum.GetValues<ContributionCellSizePreset>());
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
@@ -192,6 +205,52 @@ public sealed partial class DashboardViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string RefreshMinutesText { get; set; } = "5";
+
+    public ContributionCellSizePreset ContributionCellSize
+    {
+        get => _contributionCellSize;
+        set
+        {
+            if (value != _contributionCellSize)
+            {
+                SetContributionCellSize(value);
+            }
+        }
+    }
+
+    public void SetContributionCellSize(ContributionCellSizePreset preset)
+    {
+        if (!Enum.IsDefined(preset))
+        {
+            SettingsWarning = "Choose Small, Medium, or Large. The graph preferences have not been changed.";
+            return;
+        }
+
+        if (!IsSettingsLoaded || _isShuttingDown)
+        {
+            return;
+        }
+
+        if (!SetProperty(ref _contributionCellSize, preset, nameof(ContributionCellSize)))
+        {
+            return;
+        }
+        ScheduleContributionPreferenceSave();
+    }
+
+    private void ScheduleContributionPreferenceSave()
+    {
+        SettingsStatus = "";
+        if (_canAutoSaveSettings)
+        {
+            _isPreferenceSaveReady = false;
+            _preferenceSaveTimer.Stop();
+            _preferenceSaveTimer.Start();
+        }
+    }
+
+    private bool HasPendingContributionPreferences =>
+        ContributionCellSize != _committedSettings.ContributionCellSize;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SaveSettingsCommand))]
@@ -263,8 +322,10 @@ public sealed partial class DashboardViewModel : ObservableObject
         {
             var settings = await _settingsStore.LoadAsync(_lifetime.Token);
             settings.Validate();
-            _refreshMinutes = settings.RefreshMinutes;
-            RefreshMinutesText = _refreshMinutes.ToString(CultureInfo.InvariantCulture);
+            _committedSettings = settings;
+            SetProperty(ref _contributionCellSize, settings.ContributionCellSize, nameof(ContributionCellSize));
+            RefreshMinutesText = settings.RefreshMinutes.ToString(CultureInfo.InvariantCulture);
+            _canAutoSaveSettings = true;
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -272,11 +333,11 @@ public sealed partial class DashboardViewModel : ObservableObject
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
         {
-            SettingsWarning = "Settings could not be read. Using 5 minutes for this session; the file has not been changed. Open Settings and save a valid interval to repair it.";
+            SettingsWarning = "Settings could not be read. Using default preferences for this session; the file has not been changed. Graph preferences will not be saved automatically. Open Settings and save a valid interval to repair the file.";
         }
         finally
         {
-            IsSettingsLoaded = true;
+            IsSettingsLoaded = !_isShuttingDown;
         }
 
         UpdateRefreshSchedule();
@@ -392,55 +453,113 @@ public sealed partial class DashboardViewModel : ObservableObject
             return _saveTask ?? Task.CompletedTask;
         }
 
-        _saveTask = SaveSettingsCoreAsync();
-        return _saveTask;
-    }
-
-    private async Task SaveSettingsCoreAsync()
-    {
         SettingsStatus = "";
         if (!int.TryParse(RefreshMinutesText, NumberStyles.None, CultureInfo.InvariantCulture, out var minutes)
             || minutes is < 1 or > 60)
         {
             SettingsWarning = "Enter a whole number from 1 to 60 minutes. Settings have not been saved.";
-            return;
+            return Task.CompletedTask;
         }
 
+        _pendingRefreshMinutes = minutes;
         IsSavingSettings = true;
-        try
-        {
-            var settings = new AppSettings(minutes);
-            settings.Validate();
-            await _settingsStore.SaveAsync(settings, _lifetime.Token);
-            if (_isShuttingDown)
-            {
-                return;
-            }
+        return StartSettingsSave();
+    }
 
-            _refreshMinutes = minutes;
-            _refreshTimer.Stop();
-            UpdateRefreshSchedule();
-            _refreshTimer.Start();
-            SettingsWarning = "";
-            SettingsStatus = $"Saved. Automatic refresh runs every {minutes} {(minutes == 1 ? "minute" : "minutes")}, including while the panel is hidden.";
-        }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+    private async void OnPreferenceSaveTimerTick(DispatcherQueueTimer sender, object args)
+    {
+        _preferenceSaveTimer.Stop();
+        _isPreferenceSaveReady = true;
+        await StartSettingsSave();
+    }
+
+    private Task StartSettingsSave()
+    {
+        if (_saveTask is null || _saveTask.IsCompleted)
         {
+            _saveTask = SavePendingSettingsAsync();
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+
+        return _saveTask;
+    }
+
+    private async Task SavePendingSettingsAsync()
+    {
+        while (_pendingRefreshMinutes.HasValue
+            || (_canAutoSaveSettings && _isPreferenceSaveReady && HasPendingContributionPreferences))
         {
-            SettingsWarning = "Settings could not be saved. The previous refresh interval remains active. Check access to the app's local data folder, then try Save again.";
-        }
-        finally
-        {
-            IsSavingSettings = false;
+            var requestedMinutes = _pendingRefreshMinutes;
+            _pendingRefreshMinutes = null;
+            _isPreferenceSaveReady = false;
+            _preferenceSaveTimer.Stop();
+            // Take the snapshot when the writer is ready so preference changes cannot overwrite a newer interval.
+            var settings = _committedSettings with
+            {
+                RefreshMinutes = requestedMinutes ?? _committedSettings.RefreshMinutes,
+                ContributionCellSize = ContributionCellSize
+            };
+
+            try
+            {
+                await _settingsStore.SaveAsync(settings, _lifetime.Token);
+                _committedSettings = settings;
+                _canAutoSaveSettings = true;
+
+                if (requestedMinutes.HasValue)
+                {
+                    if (!_isShuttingDown)
+                    {
+                        _refreshTimer.Stop();
+                        UpdateRefreshSchedule();
+                        _refreshTimer.Start();
+                    }
+
+                    SettingsWarning = "";
+                    var minutes = settings.RefreshMinutes;
+                    SettingsStatus = $"Saved. Automatic refresh runs every {minutes} {(minutes == 1 ? "minute" : "minutes")}, including while the panel is hidden.";
+                }
+                else if (SettingsWarning == _settingsSaveWarning)
+                {
+                    SettingsWarning = "";
+                }
+
+                _settingsSaveWarning = "";
+                if (HasPendingContributionPreferences
+                    && !_isPreferenceSaveReady && !_preferenceSaveTimer.IsRunning)
+                {
+                    if (_isShuttingDown)
+                    {
+                        _isPreferenceSaveReady = true;
+                    }
+                    else
+                    {
+                        // Preference changes during an explicit repair had automatic saving disabled.
+                        _preferenceSaveTimer.Start();
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                var warning = $"Settings could not be saved: {exception.Message} The previous refresh interval remains active. Graph preference changes are only in memory. Check access to the app's local data folder, then try Save again.";
+                _settingsSaveWarning = requestedMinutes.HasValue ? "" : warning;
+                SettingsWarning = warning;
+                SettingsStatus = "";
+            }
+            finally
+            {
+                if (requestedMinutes.HasValue)
+                {
+                    IsSavingSettings = false;
+                }
+            }
         }
     }
 
     private void UpdateRefreshSchedule()
     {
-        _refreshTimer.Interval = TimeSpan.FromMinutes(_refreshMinutes);
-        RefreshScheduleLabel = $"Refresh every {_refreshMinutes} {(_refreshMinutes == 1 ? "minute" : "minutes")}";
+        var minutes = _committedSettings.RefreshMinutes;
+        _refreshTimer.Interval = TimeSpan.FromMinutes(minutes);
+        RefreshScheduleLabel = $"Refresh every {minutes} {(minutes == 1 ? "minute" : "minutes")}";
     }
 
     private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) => await RefreshAsync();
@@ -456,29 +575,36 @@ public sealed partial class DashboardViewModel : ObservableObject
         }
     }
 
-    public async Task ShutdownAsync()
-    {
-        if (_isShuttingDown)
-        {
-            return;
-        }
+    public Task ShutdownAsync() => _shutdownTask ??= ShutdownCoreAsync();
 
+    private async Task ShutdownCoreAsync()
+    {
         _isShuttingDown = true;
+        IsSettingsLoaded = false;
         _refreshTimer.Stop();
         _refreshTimer.Tick -= OnRefreshTimerTick;
         _clockTimer.Stop();
         _clockTimer.Tick -= OnClockTimerTick;
+        _preferenceSaveTimer.Stop();
+        _preferenceSaveTimer.Tick -= OnPreferenceSaveTimerTick;
         RefreshCommand.NotifyCanExecuteChanged();
         SaveSettingsCommand.NotifyCanExecuteChanged();
         try
         {
             var refreshShutdownTask = _refreshSession.ShutdownAsync();
             ApplyRefreshState(_refreshSession.State);
-            await Task.WhenAll(
-                refreshShutdownTask,
-                _lifetime.CancelAsync(),
-                _initializeTask ?? Task.CompletedTask,
-                _saveTask ?? Task.CompletedTask);
+            try
+            {
+                _isPreferenceSaveReady = true;
+                await StartSettingsSave();
+            }
+            finally
+            {
+                await Task.WhenAll(
+                    refreshShutdownTask,
+                    _lifetime.CancelAsync(),
+                    _initializeTask ?? Task.CompletedTask);
+            }
         }
         finally
         {

@@ -94,6 +94,7 @@ public sealed partial class MainWindow : Window
         if (!AppWindow.IsVisible)
         {
             PanelPositioner.Position(AppWindow, WindowHandle, _trayIcon);
+            _page.SetPanelVisible(true);
         }
 
         AppWindow.Show();
@@ -122,6 +123,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _page.SetPanelVisible(false);
         AppWindow.Hide();
     }
 

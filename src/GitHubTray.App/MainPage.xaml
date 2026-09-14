@@ -87,9 +87,13 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            <controls:ContributionHeatmap Margin="8,0"
+            <controls:ContributionHeatmap x:Name="ContributionGraph" Margin="8,0"
                                           Calendar="{x:Bind ViewModel.VisibleContributionCalendar, Mode=OneWay}"
                                           Status="{x:Bind ViewModel.ContributionStatus, Mode=OneWay}"
+                                          HasError="{x:Bind local:MainPage.HasError(ViewModel.Contributions.Error), Mode=OneWay}"
+                                          IsLoading="{x:Bind ViewModel.IsRefreshing, Mode=OneWay}"
+                                          IsActive="{x:Bind local:MainPage.Not(ViewModel.IsSettingsOpen), Mode=OneWay}"
+                                          CellSizePreset="{x:Bind ViewModel.ContributionCellSize, Mode=OneWay}"
                                           AutomationProperties.AutomationId="ContributionGraph" />
             <SelectorBar x:Name="ModeSelector" Grid.Row="1" SelectionChanged="ModeSelector_SelectionChanged"
                          AutomationProperties.AutomationId="DashboardModes" AutomationProperties.Name="Dashboard section">
@@ -230,6 +234,14 @@
                          Severity="Success" Title="Settings saved"
                          Message="{x:Bind ViewModel.SettingsStatus, Mode=OneWay}"
                          AutomationProperties.AutomationId="SettingsSavedInfoBar" />
+                <ComboBox Header="Contribution cell size" HorizontalAlignment="Stretch"
+                          ItemsSource="{x:Bind ViewModel.ContributionCellSizes, Mode=OneWay}"
+                          SelectedItem="{x:Bind ViewModel.ContributionCellSize, Mode=TwoWay}"
+                          IsEnabled="{x:Bind ViewModel.IsSettingsLoaded, Mode=OneWay}"
+                          AutomationProperties.AutomationId="ContributionCellSizeSelector"
+                          AutomationProperties.Name="Contribution cell size" />
+                <TextBlock Text="Small, Medium, or Large. Medium fits all 12 months; Large shows larger cells and fewer weeks. Applies and saves automatically."
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="GitHub CLI account" Style="{StaticResource BodyStrongTextBlockStyle}"
                            AutomationProperties.HeadingLevel="Level2" />
                 <TextBlock Text="{x:Bind ViewModel.AccountDescription, Mode=OneWay}" TextWrapping="Wrap"

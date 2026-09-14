@@ -21,6 +21,8 @@
     <!-- Compile the real App ViewModel, including its toolkit-generated notifications, without WinUI. -->
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionHeatmapViewModel.cs"
              Link="ViewModels\ContributionHeatmapViewModel.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionViewport.cs"
+             Link="ViewModels\ContributionViewport.cs" />
   </ItemGroup>
 
 </Project>

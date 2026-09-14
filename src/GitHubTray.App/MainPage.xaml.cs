@@ -24,6 +24,17 @@ public sealed partial class MainPage : Page
 
     public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public static Visibility Hidden(bool value) => value ? Visibility.Collapsed : Visibility.Visible;
+    public static bool Not(bool value) => !value;
+    public static bool HasError(string? error) => error is not null;
+
+    public void SetPanelVisible(bool visible)
+    {
+        ContributionGraph.SetPanelVisible(visible);
+        if (visible)
+        {
+            ContributionGraph.ReturnToPresent();
+        }
+    }
 
     public void OpenSettings()
     {

@@ -173,6 +173,8 @@ try {
     Test-Selection 'End boundary is silent' {
         Invoke-WinApp -Arguments @('ui', 'send-keys', 'down right end', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
     } ($days.Count - 1) $false
+    Invoke-WinApp -Arguments @('ui', 'send-keys', 'home', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+    Start-Sleep -Milliseconds 400
     Test-Selection 'Pointer selects a day and retains heatmap focus' {
         Invoke-WinApp -Arguments @('ui', 'click', $days[10].Current.AutomationId, '-a', "$AppPid")
     } 10 $true
@@ -202,6 +204,14 @@ finally {
     $events.Dispose()
     if ($null -ne $initialDay) {
         try {
+            $viewport = Find-Element $graph 'ContributionViewport'
+            $scroll = $viewport.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+            if ($scroll.Current.HorizontallyScrollable) {
+                $initialIndex = [array]::IndexOf($days, $initialDay)
+                $scroll.SetScrollPercent(100.0 * $initialIndex / ($days.Count - 1),
+                    [System.Windows.Automation.ScrollPattern]::NoScroll)
+                Start-Sleep -Milliseconds 400
+            }
             Invoke-WinApp -Arguments @('ui', 'click', $initialDay.Current.AutomationId, '-a', "$AppPid")
         }
         catch {

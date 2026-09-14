@@ -22,9 +22,30 @@ calendar, including its reported intensity levels, rather than estimating counts
 from events. Counts reflect what GitHub exposes for the current account.
 The app follows your Windows theme and uses native controls rather than a WebView.
 
-Hover over a contribution day for its date and count. The graph is also a single
-keyboard focus stop: use arrow keys to inspect days and Home/End to reach the
-start or end of the period. A failed calendar refresh is shown explicitly and
+The contribution plot keeps all seven weekday rows visible. Its borderless
+container shrinks with the selected cell size. There is no gesture/keyboard zoom,
+zoom toolbar, or month/day axis text.
+Cells are laid out as pixel-aligned squares rather than
+scaled bitmaps. Each panel open starts at the current week on the right; scroll
+horizontally into the past; reopening the panel or pressing End returns to the latest day.
+
+**Preferences > Contribution cell size** offers Small, Medium, and Large.
+Medium fits all 12 months across the window. Large shows larger cells and fewer
+weeks. Cell size saves automatically and is remembered
+across restarts. The refresh interval still uses its separate **Save interval**
+button.
+
+Hover over a contribution day for its date and count. The graph has no legend or
+persistent selected-day text; that space stays open. It is also a single keyboard
+focus stop for day inspection: use arrow keys to inspect days, Home/End to reach
+the start/end of the period. Keyboard selection
+shows a tooltip and remains available to assistive technology.
+Zero-activity days use a neutral background fill at 50% opacity with a faint
+outline; future dates remain blank. First load shimmers the skeleton cells
+themselves in a staggered wave, leaving the gaps and background untouched.
+Windows reduced-motion and high-contrast settings use static placeholder cells.
+A normal loaded graph has no date-range, update-time, or instructional footer.
+Loading and error feedback still appear when needed. A failed calendar refresh is shown explicitly and
 does not prevent the other activity sections from loading.
 Refreshing retains the selected date while it is still available; otherwise,
 the latest returned day is selected. Keyboard and pointer selection changes are
@@ -85,8 +106,9 @@ not require GitHub authentication or make network requests.
 The refresh-session tests run the production App-state module and Core fetching
 with fixture responses, without WinUI. They cover overlapping refresh requests,
 account-safe publication and recovery, immutable snapshots, and shutdown.
-The App tests compile the production heatmap view model without WinUI and cover
-selection transitions, date retention, and coherent property notifications.
+The App tests compile the production heatmap view model and viewport geometry
+without WinUI and cover selection transitions, date retention, coherent property
+notifications, pixel-aligned preset sizes, and right-edge anchoring.
 The runtime checks verify x86/x64/ARM64 selection without machine-local publish
 profiles, including preservation of an explicitly supplied runtime identifier.
 
@@ -100,6 +122,17 @@ This checks keyboard/pointer selection, focus, and UI Automation value/live-regi
 events, and captures outline screenshots in a temporary output directory. It
 restores the initially selected day after the checks.
 The native checks require uninterrupted foreground access to the tray panel.
+
+For cell-size presets, responsive container geometry, and horizontal history checks
+against the running app:
+
+```powershell
+powershell.exe -NoProfile -Mta -File .\scripts\Test-ContributionViewport.ps1 -AppPid <PID>
+```
+
+Pass `-SettingsPath <app-local-settings.json>` to also check persisted cell size
+without changing the refresh interval. The script restores the initial size and
+returns to the dashboard.
 
 ## Port plan
 

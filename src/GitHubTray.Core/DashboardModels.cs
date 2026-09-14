@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace GitHubTray.Core;
 
 public sealed record GitHubUser(string Login, string DisplayName, Uri Url);
@@ -39,13 +41,28 @@ public class GitHubException(string message, Exception? innerException = null)
 
 public sealed class GitHubAccountChangedException(string message) : GitHubException(message);
 
-public sealed record AppSettings(int RefreshMinutes = 5)
+[JsonConverter(typeof(JsonStringEnumConverter<ContributionCellSizePreset>))]
+public enum ContributionCellSizePreset
+{
+    Small,
+    Medium,
+    Large
+}
+
+public sealed record AppSettings(
+    int RefreshMinutes = 5,
+    ContributionCellSizePreset ContributionCellSize = ContributionCellSizePreset.Medium)
 {
     public void Validate()
     {
         if (RefreshMinutes is < 1 or > 60)
         {
             throw new ArgumentOutOfRangeException(nameof(RefreshMinutes), "Refresh interval must be between 1 and 60 minutes.");
+        }
+
+        if (!Enum.IsDefined(ContributionCellSize))
+        {
+            throw new ArgumentOutOfRangeException(nameof(ContributionCellSize), "Contribution cell size must be Small, Medium, or Large.");
         }
     }
 }

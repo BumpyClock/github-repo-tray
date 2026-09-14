@@ -12,8 +12,8 @@ using Windows.System;
 namespace GitHubTray_App.Controls;
 
 /// <summary>
-/// WinUI has no built-in contribution chart. One keyboard-focusable native control
-/// owns a Grid of noninteractive date cells; no per-day buttons or custom animation.
+/// A native calendar with preset cell sizes and one focus stop for day inspection.
+/// Viewport and loading behavior are kept separate from selection synchronization.
 /// </summary>
 public sealed partial class ContributionHeatmap : UserControl
 {
@@ -23,10 +23,13 @@ public sealed partial class ContributionHeatmap : UserControl
 
     public static readonly DependencyProperty StatusProperty = DependencyProperty.Register(
         nameof(Status), typeof(string), typeof(ContributionHeatmap), new PropertyMetadata("Loading contributions…"));
+    public static readonly DependencyProperty HasErrorProperty = DependencyProperty.Register(
+        nameof(HasError), typeof(bool), typeof(ContributionHeatmap), new PropertyMetadata(false));
 
     public ContributionHeatmap()
     {
         InitializeComponent();
+        LostFocus += (_, _) => CloseSelectionTooltip();
     }
 
     public ContributionHeatmapViewModel ViewModel { get; } = new();
@@ -44,6 +47,14 @@ public sealed partial class ContributionHeatmap : UserControl
     }
 
     public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
+    public static Visibility FeedbackVisibility(bool loading, bool hasDays, bool hasError) =>
+        loading || !hasDays || hasError ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool HasError
+    {
+        get => (bool)GetValue(HasErrorProperty);
+        set => SetValue(HasErrorProperty, value);
+    }
 
     private static void OnCalendarChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
@@ -52,49 +63,19 @@ public sealed partial class ContributionHeatmap : UserControl
 
     private void UpdateCalendar(ContributionCalendar? calendar)
     {
+        CloseSelectionTooltip();
         var change = ViewModel.UpdateCalendar(calendar);
-        CalendarGrid.Children.Clear();
-        CalendarGrid.ColumnDefinitions.Clear();
-        for (var week = 0; week < ViewModel.WeekCount; week++)
-        {
-            CalendarGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
-
-        foreach (var day in ViewModel.Days)
-        {
-            var cell = new ContributionDayCell(day)
-            {
-                // ThemeResource setters in these styles stay live across theme changes.
-                // Use the supplied enum verbatim; there are no locally invented thresholds.
-                Style = (Style)Resources[$"ContributionLevel{(int)day.Day.Level}Style"]
-            };
-            Grid.SetColumn(cell, day.WeekIndex);
-            Grid.SetRow(cell, day.DayIndex);
-            CalendarGrid.Children.Add(cell);
-        }
-
-        CalendarGrid.Children.Add(SelectionOutline);
+        RebuildPlot();
         SynchronizeSelection(change, announce: false);
-        UpdateCellSize();
-    }
-
-    private void CalendarGrid_SizeChanged(object sender, SizeChangedEventArgs args) => UpdateCellSize();
-
-    private void UpdateCellSize()
-    {
-        if (ViewModel.WeekCount > 0 && CalendarGrid.ActualWidth > 0)
-        {
-            var height = Math.Clamp(CalendarGrid.ActualWidth / ViewModel.WeekCount * 7, 42, 63);
-            if (Math.Abs(CalendarGrid.Height - height) > 0.25)
-            {
-                CalendarGrid.Height = height;
-            }
-        }
     }
 
     protected override void OnKeyDown(KeyRoutedEventArgs args)
     {
         base.OnKeyDown(args);
+        if (XamlRoot is not null && !ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this))
+        {
+            return;
+        }
         if (!ViewModel.HasDays)
         {
             return;
@@ -127,9 +108,10 @@ public sealed partial class ContributionHeatmap : UserControl
 
         args.Handled = true;
         SynchronizeSelection(change, announce: true);
+        RevealSelection();
     }
 
-    private void CalendarGrid_PointerPressed(object sender, PointerRoutedEventArgs args)
+    private void CalendarGrid_Tapped(object sender, TappedRoutedEventArgs args)
     {
         var source = args.OriginalSource as DependencyObject;
         while (source is not null && source != CalendarGrid && source is not ContributionDayCell)
@@ -139,6 +121,7 @@ public sealed partial class ContributionHeatmap : UserControl
 
         if (source is ContributionDayCell cell)
         {
+            CloseSelectionTooltip();
             var index = ViewModel.Days.ToList().IndexOf(cell.Day);
             var change = ViewModel.SelectIndex(index);
             Focus(FocusState.Pointer);
@@ -154,6 +137,10 @@ public sealed partial class ContributionHeatmap : UserControl
         {
             Grid.SetColumn(SelectionOutline, selected.WeekIndex);
             Grid.SetRow(SelectionOutline, selected.DayIndex);
+            if (XamlRoot is not null)
+            {
+                LayoutCell(SelectionOutline);
+            }
             SelectionOutline.Visibility = Visibility.Visible;
         }
         else
@@ -188,7 +175,10 @@ public sealed partial class ContributionHeatmap : UserControl
 
         protected override string GetClassNameCore() => nameof(ContributionHeatmap);
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
-        protected override object GetPatternCore(PatternInterface patternInterface) =>
-            patternInterface == PatternInterface.Value ? this : base.GetPatternCore(patternInterface);
+        protected override object GetPatternCore(PatternInterface patternInterface) => patternInterface switch
+        {
+            PatternInterface.Value => this,
+            _ => base.GetPatternCore(patternInterface)
+        };
     }
 }

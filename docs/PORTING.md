@@ -66,8 +66,8 @@ App stops those timers and cancels settings work; the session stops accepting
 refreshes, cancels and drains its active refresh, and prevents late publication.
 The App also waits for initialization and settings work before closing.
 
-Activity data stays in memory and is not persisted to disk. Only the refresh
-interval is stored locally. A malformed settings file produces a visible warning;
+Activity data stays in memory and is not persisted to disk. The refresh interval
+and contribution cell-size preset are stored locally. A malformed settings file produces a visible warning;
 it is replaced only when the user explicitly saves a valid setting.
 
 ## GitHub contract
@@ -125,8 +125,27 @@ only changed user selections request a polite live-region announcement.
 - Show on launch; closing or Escape returns to the tray. Quit explicitly exits.
 - Four native selectable modes with a virtualized list and clear loading, empty,
   unavailable, and stale states.
-- A compact native contribution heatmap above the modes, with the real total and
-  date range, hover details, and one keyboard focus stop for day navigation.
+- A native contribution heatmap above the modes, with the real total
+  and an accessible date range. Its borderless container shrinks with the preset
+  and keeps all seven rows visible (up to 154 DIPs for Large), using
+  pixel-aligned square-cell layout rather than bitmap scaling. Gesture and
+  keyboard zoom are deferred. No zoom toolbar or month/day axis labels. Preferences offers S/M/L:
+  Medium fits the loaded year when selected; Large shows larger squares and fewer
+  weeks. The preset persists; reopening starts at the latest week on the
+  right. Horizontal scrolling explores the loaded year. End selects the latest day.
+- Cell details appear only in hover/keyboard tooltips; no legend or visible
+  selected-day detail strip. Preserve empty space and the selected-day UIA value
+  and live-region peer. Zero-activity cells use a neutral background token at 50%
+  opacity plus a faint stroke, not faded green; high contrast uses opaque system
+  brushes. Future/out-of-range days remain absent.
+- Hide the normal date-range, update-time, and help footer; keep a small breathing
+  gap and show status text only for loading or errors.
+- Reserve the same per-preset plot and footer geometry for loading, empty and error states.
+  First-load skeleton cells shimmer via staggered cell opacity, never a
+  viewport overlay. Motion runs only while the panel and graph are visible and
+  Windows animations are enabled; reduced motion/high contrast use static cells.
+  Refresh retains the last successful eligible calendar instead of replacing it
+  with a skeleton.
 - Manual refresh and a local refresh-interval setting.
 - Follow Windows light/dark/high-contrast colors, system typography, keyboard
   focus, UI Automation labels, and platform motion preferences.
