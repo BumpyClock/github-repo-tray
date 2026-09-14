@@ -92,12 +92,12 @@
                     <ScrollViewer x:Name="PlotScroll" Padding="0,0,0,12" IsTabStop="False" UseLayoutRounding="True"
                                   HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled"
-                                  HorizontalContentAlignment="Right" VerticalContentAlignment="Center"
+                                  HorizontalContentAlignment="Left" VerticalContentAlignment="Center"
                                   IsHorizontalScrollChainingEnabled="False" IsVerticalScrollChainingEnabled="False"
                                   IsZoomChainingEnabled="False" ZoomMode="Disabled"
                                   ViewChanged="PlotScroll_ViewChanged" SizeChanged="PlotScroll_SizeChanged"
                                   AutomationProperties.AutomationId="ContributionViewport" AutomationProperties.Name="Contribution calendar viewport">
-                        <Grid x:Name="CalendarGrid" Height="140" HorizontalAlignment="Right" VerticalAlignment="Center" UseLayoutRounding="True"
+                        <Grid x:Name="CalendarGrid" Height="140" HorizontalAlignment="Left" VerticalAlignment="Center" UseLayoutRounding="True"
                               Tapped="CalendarGrid_Tapped" Background="{ThemeResource SubtleFillColorTransparentBrush}">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="20" /><RowDefinition Height="20" /><RowDefinition Height="20" />
@@ -113,18 +113,16 @@
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{StaticResource CaptionTextBlockStyle}"
                                Visibility="Collapsed" AutomationProperties.AutomationId="ContributionPlaceholder" />
                 </Grid>
-        </Grid>
-        <Grid Height="32">
-            <!-- Retain the live-region peer while keeping normal day details tooltip-only. -->
+            <!-- Keep the live-region peer without reserving a visible detail row. -->
             <TextBlock x:Name="SelectedDayText" Text="{x:Bind ViewModel.SelectedDayDescription, Mode=OneWay}" Height="22"
                        Opacity="0" IsHitTestVisible="False"
                        AutomationProperties.AutomationId="ContributionSelectedDay" AutomationProperties.LiveSetting="Polite"
                        Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-            <TextBlock Text="{x:Bind Status, Mode=OneWay}" VerticalAlignment="Center"
-                       Visibility="{x:Bind local:ContributionHeatmap.FeedbackVisibility(IsLoading, ViewModel.HasDays, HasError), Mode=OneWay}"
-                       AutomationProperties.AutomationId="ContributionStatus" AutomationProperties.LiveSetting="Polite"
-                       Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
-                       ToolTipService.ToolTip="{x:Bind Status, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
         </Grid>
+        <TextBlock Text="{x:Bind Status, Mode=OneWay}"
+                   Visibility="{x:Bind local:ContributionHeatmap.FeedbackVisibility(IsLoading, ViewModel.HasDays, HasError), Mode=OneWay}"
+                   AutomationProperties.AutomationId="ContributionStatus" AutomationProperties.LiveSetting="Polite"
+                   Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
+                   ToolTipService.ToolTip="{x:Bind Status, Mode=OneWay}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
     </StackPanel>
 </UserControl>

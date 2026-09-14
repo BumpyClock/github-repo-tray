@@ -46,7 +46,7 @@ internal static class PanelPositioner
         var dpi = NativeMethods.GetDpiForWindow(window);
         var scale = (dpi == 0 ? 96 : dpi) / 96.0;
         var gap = Math.Max(1, (int)Math.Round(8 * scale));
-        var width = Math.Min((int)Math.Round(500 * scale), Math.Max(1, work.Right - work.Left - 2 * gap));
+        var width = Math.Min((int)Math.Round(420 * scale), Math.Max(1, work.Right - work.Left - 2 * gap));
         var height = Math.Min((int)Math.Round(720 * scale), Math.Max(1, work.Bottom - work.Top - 2 * gap));
         var x = anchor.X - width / 2;
         var y = work.Bottom - height - gap;

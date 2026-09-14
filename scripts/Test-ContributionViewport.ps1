@@ -12,24 +12,18 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase
 
 function Invoke-UI {
     param([string[]]$Arguments)
-    $output = & winapp ui @Arguments -a "$AppPid" 2>&1
+    $output = & winapp ui @Arguments -w "$windowHandle" 2>&1
     if ($LASTEXITCODE -ne 0) { throw ($output -join [Environment]::NewLine) }
 }
 
 function Find-Control {
     param([string]$Id)
-    $processCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $AppPid)
     $idCondition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $Id)
     $deadline = [datetime]::UtcNow.AddSeconds(5)
     do {
-        $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-            [System.Windows.Automation.TreeScope]::Children, $processCondition)
-        foreach ($window in $windows) {
-            $control = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $idCondition)
-            if ($null -ne $control) { return $control }
-        }
+        $control = $windowRoot.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $idCondition)
+        if ($null -ne $control) { return $control }
         Start-Sleep -Milliseconds 100
     } while ([datetime]::UtcNow -lt $deadline)
     throw "Missing control: $Id. The panel must be open."
@@ -44,7 +38,14 @@ function Set-CellSize {
     param([string]$Size)
     Invoke-UI -Arguments @('invoke', 'SettingsButton')
     $null = Find-Control 'ContributionCellSizeSelector'
-    Invoke-UI -Arguments @('set-value', 'ContributionCellSizeSelector', $Size)
+    $keys = switch ($Size) {
+        'Small' { 'home' }
+        'Medium' { 'home down' }
+        'Large' { 'end' }
+        default { throw "Unexpected cell size: $Size" }
+    }
+    Invoke-UI -Arguments @('send-keys', $keys, '--target', 'ContributionCellSizeSelector', '--via', 'send-input')
+    Invoke-UI -Arguments @('wait-for', 'ContributionCellSizeSelector', '--value', $Size, '-t', '5000')
     Invoke-UI -Arguments @('invoke', 'SettingsBackButton')
     $null = Find-Control 'ContributionViewport'
     Start-Sleep -Milliseconds 350
@@ -63,12 +64,15 @@ function Test-Viewport {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$windowHandle = (Get-Process -Id $AppPid).MainWindowHandle
+if ($windowHandle -eq 0) { throw 'Open the tray panel before running these checks.' }
+$windowRoot = [System.Windows.Automation.AutomationElement]::FromHandle($windowHandle)
 $graph = Find-Control 'ContributionGraph'
 $viewport = Find-Control 'ContributionViewport'
 $originalBounds = $viewport.Current.BoundingRectangle
 Invoke-UI -Arguments @('invoke', 'SettingsButton')
 $selector = Find-Control 'ContributionCellSizeSelector'
-$originalSize = $selector.GetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern).GetCurrentSelection()[0].Current.Name
+$originalSize = $selector.GetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern).Current.GetSelection()[0].Current.Name
 Invoke-UI -Arguments @('invoke', 'SettingsBackButton')
 $originalInterval = if ($SettingsPath -and (Test-Path -LiteralPath $SettingsPath)) {
     (Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json).RefreshMinutes
@@ -99,10 +103,11 @@ try {
             } | Select-Object -Unique)
             Assert-True ($rows.Count -eq 7) 'Not all weekday rows are visible.'
             $scroll = $viewport.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
-            if ($size -eq 'Medium') {
-                Assert-True ($scroll.Current.HorizontalViewSize -ge 99.5) 'Medium does not fit the full year.'
-            } elseif ($size -eq 'Large') {
-                Assert-True ($scroll.Current.HorizontalViewSize -lt 99) 'Large does not expose horizontal history.'
+            if ($size -eq 'Small') {
+                Assert-True ($scroll.Current.HorizontalViewSize -ge 99.5) 'Small does not fit the full year.'
+            } else {
+                Assert-True ($scroll.Current.HorizontalViewSize -lt 99) "$size does not expose horizontal history."
+                Assert-True ($scroll.Current.HorizontalScrollPercent -gt 99) "$size did not open at the present edge."
             }
             Invoke-UI -Arguments @('screenshot', 'ContributionGraph', '-o', (Join-Path $OutputDirectory "$size.png"))
         }

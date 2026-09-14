@@ -240,7 +240,7 @@
                           IsEnabled="{x:Bind ViewModel.IsSettingsLoaded, Mode=OneWay}"
                           AutomationProperties.AutomationId="ContributionCellSizeSelector"
                           AutomationProperties.Name="Contribution cell size" />
-                <TextBlock Text="Small, Medium, or Large. Medium fits all 12 months; Large shows larger cells and fewer weeks. Applies and saves automatically."
+                <TextBlock Text="Small fits all 12 months. Medium and Large keep larger cells and scroll horizontally for older activity. Applies and saves automatically."
                            TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="GitHub CLI account" Style="{StaticResource BodyStrongTextBlockStyle}"
                            AutomationProperties.HeadingLevel="Level2" />

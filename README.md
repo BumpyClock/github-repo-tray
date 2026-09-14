@@ -25,13 +25,16 @@ The app follows your Windows theme and uses native controls rather than a WebVie
 The contribution plot keeps all seven weekday rows visible. Its borderless
 container shrinks with the selected cell size. There is no gesture/keyboard zoom,
 zoom toolbar, or month/day axis text.
+Compact calendars share the same left edge; space for a horizontal scrollbar
+is reserved only when history actually overflows.
 Cells are laid out as pixel-aligned squares rather than
 scaled bitmaps. Each panel open starts at the current week on the right; scroll
 horizontally into the past; reopening the panel or pressing End returns to the latest day.
 
 **Preferences > Contribution cell size** offers Small, Medium, and Large.
-Medium fits all 12 months across the window. Large shows larger cells and fewer
-weeks. Cell size saves automatically and is remembered
+The panel is 420 DIPs wide. Small fits all 12 months without a wide empty margin.
+Medium and Large retain their larger cells and scroll horizontally through older
+weeks instead of shrinking to fit. Cell size saves automatically and is remembered
 across restarts. The refresh interval still uses its separate **Save interval**
 button.
 

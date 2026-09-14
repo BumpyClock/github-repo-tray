@@ -52,6 +52,11 @@ public sealed partial class ContributionHeatmap
         var control = (ContributionHeatmap)sender;
         if (control.CalendarGrid is not null)
         {
+            if (control.IsActive)
+            {
+                // Let the parent's visibility binding finish before restoring the viewport.
+                control.DispatcherQueue.TryEnqueue(control.ApplyViewport);
+            }
             control.UpdateShimmer();
         }
     }

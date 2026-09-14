@@ -42,7 +42,7 @@ public sealed partial class ContributionHeatmap
 
     private void ApplyViewport()
     {
-        if (_layingOut || !IsLoaded || PlotScroll.ViewportWidth <= 0 || _plotWeekCount == 0)
+        if (_layingOut || !IsLoaded || !IsActive || PlotScroll.ViewportWidth <= 0 || _plotWeekCount == 0)
         {
             return;
         }
@@ -65,7 +65,9 @@ public sealed partial class ContributionHeatmap
             }
             CalendarGrid.Width = Math.Round(_plotWeekCount * _cellLayout.WeekPitch * scale) / scale;
             CalendarGrid.Height = 7 * _cellLayout.RowPitch;
-            GraphContainer.Height = _cellLayout.PlotHeight;
+            PlotScroll.Padding = new Thickness(0, 0, 0,
+                ContributionViewport.GetScrollbarSpace(CalendarGrid.Width, PlotScroll.ViewportWidth));
+            GraphContainer.Height = _cellLayout.GetPlotHeight(CalendarGrid.Width, PlotScroll.ViewportWidth);
             foreach (var child in CalendarGrid.Children.OfType<FrameworkElement>())
             {
                 LayoutCell(child);

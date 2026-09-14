@@ -121,7 +121,7 @@ only changed user selections request a polite live-region announcement.
   Match its compact translucent menu, dense divided rows, restrained accent
   selection, secondary metadata, relative timestamps, and footer actions using
   native Windows controls and acrylic rather than copying macOS chrome.
-- Compact, taskbar-adjacent panel rather than a browser or full-size dashboard.
+- Compact, 420-DIP-wide taskbar-adjacent panel rather than a browser or full-size dashboard.
 - Show on launch; closing or Escape returns to the tray. Quit explicitly exits.
 - Four native selectable modes with a virtualized list and clear loading, empty,
   unavailable, and stale states.
@@ -130,17 +130,18 @@ only changed user selections request a polite live-region announcement.
   and keeps all seven rows visible (up to 154 DIPs for Large), using
   pixel-aligned square-cell layout rather than bitmap scaling. Gesture and
   keyboard zoom are deferred. No zoom toolbar or month/day axis labels. Preferences offers S/M/L:
-  Medium fits the loaded year when selected; Large shows larger squares and fewer
-  weeks. The preset persists; reopening starts at the latest week on the
+  Small fits the loaded year; Medium and Large preserve larger squares and scroll
+  horizontally instead of shrinking with the window. The preset persists; reopening starts at the latest week on the
   right. Horizontal scrolling explores the loaded year. End selects the latest day.
 - Cell details appear only in hover/keyboard tooltips; no legend or visible
   selected-day detail strip. Preserve empty space and the selected-day UIA value
   and live-region peer. Zero-activity cells use a neutral background token at 50%
   opacity plus a faint stroke, not faded green; high contrast uses opaque system
   brushes. Future/out-of-range days remain absent.
-- Hide the normal date-range, update-time, and help footer; keep a small breathing
-  gap and show status text only for loading or errors.
-- Reserve the same per-preset plot and footer geometry for loading, empty and error states.
+- Hide the normal date-range, update-time, and help footer without reserving an
+  empty detail row. Show status text only for loading or errors. Compact calendars
+  are left-aligned, and scrollbar space is reserved only for overflowing history.
+- Reserve the same per-preset plot geometry for loading, empty and error states.
   First-load skeleton cells shimmer via staggered cell opacity, never a
   viewport overlay. Motion runs only while the panel and graph are visible and
   Windows animations are enabled; reduced motion/high contrast use static cells.

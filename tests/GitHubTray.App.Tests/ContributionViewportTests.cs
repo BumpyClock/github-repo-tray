@@ -15,7 +15,7 @@ public sealed class ContributionViewportTests
     {
         foreach (var preset in Enum.GetValues<ContributionCellSizePreset>())
         {
-            var layout = ContributionViewport.GetCellLayout(scale, 440, 53, preset);
+            var layout = ContributionViewport.GetCellLayout(scale, 366, 53, preset);
             Assert.True(layout.RowPitch * 7 <= ContributionViewport.PlotHeight - ContributionViewport.TopInset - ContributionViewport.ScrollbarSpace);
             for (var week = 0; week < 53; week++)
             {
@@ -34,9 +34,9 @@ public sealed class ContributionViewportTests
     [InlineData(440, 1.25)]
     [InlineData(458, 1.5)]
     [InlineData(500, 2)]
-    public void MediumFitsTheEntireYearExactly(double width, double scale)
+    public void SmallFitsTheEntireYearExactly(double width, double scale)
     {
-        var layout = ContributionViewport.GetCellLayout(scale, width, 53, ContributionCellSizePreset.Medium);
+        var layout = ContributionViewport.GetCellLayout(scale, width, 53, ContributionCellSizePreset.Small);
         var actualWidth = Enumerable.Range(0, 53).Sum(week => ContributionViewport.GetWeekCell(layout, week, scale).WeekPitch);
         Assert.Equal(Math.Round(width * scale) / scale, actualWidth, 8);
     }
@@ -44,11 +44,11 @@ public sealed class ContributionViewportTests
     [Fact]
     public void LargeKeepsReadableCellsAndUsesHorizontalHistory()
     {
-        var medium = ContributionViewport.GetCellLayout(1.5, 440, 53, ContributionCellSizePreset.Medium);
-        var large = ContributionViewport.GetCellLayout(1.5, 440, 53, ContributionCellSizePreset.Large);
+        var medium = ContributionViewport.GetCellLayout(1.5, 366, 53, ContributionCellSizePreset.Medium);
+        var large = ContributionViewport.GetCellLayout(1.5, 366, 53, ContributionCellSizePreset.Large);
         Assert.True(large.CellSize > medium.CellSize);
         Assert.True(large.CellSize >= 16);
-        Assert.True(large.WeekPitch * 53 > 440);
+        Assert.True(large.WeekPitch * 53 > 366);
         Assert.InRange(large.RowPitch - large.WeekPitch, 0, 1 / 1.5);
     }
 
@@ -59,12 +59,37 @@ public sealed class ContributionViewportTests
     [InlineData(2)]
     public void ContainerShrinksAlongWithTheSelectedPreset(double scale)
     {
-        var small = ContributionViewport.GetCellLayout(scale, 440, 53, ContributionCellSizePreset.Small);
-        var medium = ContributionViewport.GetCellLayout(scale, 440, 53, ContributionCellSizePreset.Medium);
-        var large = ContributionViewport.GetCellLayout(scale, 440, 53, ContributionCellSizePreset.Large);
-        Assert.True(small.PlotHeight < medium.PlotHeight);
-        Assert.True(medium.PlotHeight < large.PlotHeight);
-        Assert.True(large.PlotHeight <= ContributionViewport.PlotHeight);
+        var small = ContributionViewport.GetCellLayout(scale, 366, 53, ContributionCellSizePreset.Small);
+        var medium = ContributionViewport.GetCellLayout(scale, 366, 53, ContributionCellSizePreset.Medium);
+        var large = ContributionViewport.GetCellLayout(scale, 366, 53, ContributionCellSizePreset.Large);
+        var smallHeight = small.GetPlotHeight(small.WeekPitch * 53, 366);
+        var mediumHeight = medium.GetPlotHeight(medium.WeekPitch * 53, 366);
+        var largeHeight = large.GetPlotHeight(large.WeekPitch * 53, 366);
+        Assert.True(smallHeight < mediumHeight);
+        Assert.True(mediumHeight < largeHeight);
+        Assert.True(largeHeight <= ContributionViewport.PlotHeight);
+    }
+
+    [Theory]
+    [InlineData(ContributionCellSizePreset.Medium)]
+    [InlineData(ContributionCellSizePreset.Large)]
+    public void LargerPresetsKeepTheirCellSizeWhenTheWindowNarrows(ContributionCellSizePreset preset)
+    {
+        var wide = ContributionViewport.GetCellLayout(1.5, 440, 53, preset);
+        var narrow = ContributionViewport.GetCellLayout(1.5, 366, 53, preset);
+        Assert.Equal(wide.CellSize, narrow.CellSize);
+        Assert.True(narrow.WeekPitch * 53 > 366);
+        Assert.Equal(ContributionViewport.ScrollbarSpace, ContributionViewport.GetScrollbarSpace(narrow.WeekPitch * 53, 366));
+    }
+
+    [Theory]
+    [InlineData(340, 440, 0)]
+    [InlineData(440, 440, 0)]
+    [InlineData(440.00001, 440, 0)]
+    [InlineData(900, 440, 12)]
+    public void OnlyOverflowingCalendarsReserveScrollbarSpace(double contentWidth, double viewportWidth, double expected)
+    {
+        Assert.Equal(expected, ContributionViewport.GetScrollbarSpace(contentWidth, viewportWidth));
     }
 
     [Fact]

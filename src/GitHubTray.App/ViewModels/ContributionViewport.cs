@@ -6,7 +6,8 @@ internal readonly record struct ContributionViewportAnchor(bool IsAtPresent, dou
 internal readonly record struct ContributionCellLayout(
     double CellSize, double WeekPitch, double RowPitch, double LeftInset, double TopInset, double StrokeThickness)
 {
-    public double PlotHeight => 7 * RowPitch + ContributionViewport.TopInset + ContributionViewport.ScrollbarSpace;
+    public double GetPlotHeight(double contentWidth, double viewportWidth) =>
+        7 * RowPitch + ContributionViewport.TopInset + ContributionViewport.GetScrollbarSpace(contentWidth, viewportWidth);
 }
 
 internal static class ContributionViewport
@@ -15,6 +16,9 @@ internal static class ContributionViewport
     public const double ScrollbarSpace = 12;
     public const double TopInset = 8;
 
+    public static double GetScrollbarSpace(double contentWidth, double viewportWidth) =>
+        contentWidth > viewportWidth + 0.01 ? ScrollbarSpace : 0;
+
     public static ContributionCellLayout GetCellLayout(
         double rasterizationScale, double viewportWidth, int weeks, ContributionCellSizePreset preset)
     {
@@ -22,12 +26,12 @@ internal static class ContributionViewport
         var rowPixels = Math.Floor((PlotHeight - TopInset - ScrollbarSpace) * scale / 7);
         var gapPixels = Math.Max(2, Math.Round(2 * scale));
         var maximumCellPixels = Math.Max(1, rowPixels - gapPixels);
-        var mediumCellPixels = Math.Max(1, viewportWidth * scale / Math.Max(1, weeks) - gapPixels);
+        var fittedCellPixels = Math.Max(1, viewportWidth * scale / Math.Max(1, weeks) - gapPixels);
         var baseCellPixels = preset switch
         {
-            ContributionCellSizePreset.Small => mediumCellPixels * 0.75,
-            ContributionCellSizePreset.Medium => mediumCellPixels,
-            ContributionCellSizePreset.Large => Math.Max(16 * scale, mediumCellPixels * 2),
+            ContributionCellSizePreset.Small => fittedCellPixels,
+            ContributionCellSizePreset.Medium => 7 * scale,
+            ContributionCellSizePreset.Large => 16 * scale,
             _ => throw new ArgumentOutOfRangeException(nameof(preset))
         };
         var cellPixels = Math.Clamp(baseCellPixels, 1, maximumCellPixels);
