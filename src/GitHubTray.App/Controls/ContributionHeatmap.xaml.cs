@@ -52,7 +52,7 @@ public sealed partial class ContributionHeatmap : UserControl
 
     private void UpdateCalendar(ContributionCalendar? calendar)
     {
-        ViewModel.UpdateCalendar(calendar);
+        var change = ViewModel.UpdateCalendar(calendar);
         CalendarGrid.Children.Clear();
         CalendarGrid.ColumnDefinitions.Clear();
         for (var week = 0; week < ViewModel.WeekCount; week++)
@@ -74,7 +74,7 @@ public sealed partial class ContributionHeatmap : UserControl
         }
 
         CalendarGrid.Children.Add(SelectionOutline);
-        UpdateSelectionOutline();
+        SynchronizeSelection(change, announce: false);
         UpdateCellSize();
     }
 
@@ -100,34 +100,33 @@ public sealed partial class ContributionHeatmap : UserControl
             return;
         }
 
-        var previousDescription = ViewModel.SelectedDayDescription;
+        ContributionSelectionChange change;
         switch (args.Key)
         {
             case VirtualKey.Up:
-                ViewModel.MoveSelection(-1);
+                change = ViewModel.MoveSelection(-1);
                 break;
             case VirtualKey.Down:
-                ViewModel.MoveSelection(1);
+                change = ViewModel.MoveSelection(1);
                 break;
             case VirtualKey.Left:
-                ViewModel.MoveSelection(-7);
+                change = ViewModel.MoveSelection(-7);
                 break;
             case VirtualKey.Right:
-                ViewModel.MoveSelection(7);
+                change = ViewModel.MoveSelection(7);
                 break;
             case VirtualKey.Home:
-                ViewModel.SelectIndex(0);
+                change = ViewModel.SelectIndex(0);
                 break;
             case VirtualKey.End:
-                ViewModel.SelectIndex(ViewModel.Days.Count - 1);
+                change = ViewModel.SelectIndex(ViewModel.Days.Count - 1);
                 break;
             default:
                 return;
         }
 
         args.Handled = true;
-        UpdateSelectionOutline();
-        AnnounceSelection(previousDescription);
+        SynchronizeSelection(change, announce: true);
     }
 
     private void CalendarGrid_PointerPressed(object sender, PointerRoutedEventArgs args)
@@ -140,19 +139,18 @@ public sealed partial class ContributionHeatmap : UserControl
 
         if (source is ContributionDayCell cell)
         {
-            var previousDescription = ViewModel.SelectedDayDescription;
             var index = ViewModel.Days.ToList().IndexOf(cell.Day);
-            ViewModel.SelectIndex(index);
+            var change = ViewModel.SelectIndex(index);
             Focus(FocusState.Pointer);
-            UpdateSelectionOutline();
-            AnnounceSelection(previousDescription);
+            SynchronizeSelection(change, announce: true);
             args.Handled = true;
         }
     }
 
-    private void UpdateSelectionOutline()
+    private void SynchronizeSelection(ContributionSelectionChange change, bool announce)
     {
-        if (ViewModel.SelectedDay is { } selected)
+        // A rebuilt calendar can move the outline without changing the selected value.
+        if (change.Current?.PlotDay is { } selected)
         {
             Grid.SetColumn(SelectionOutline, selected.WeekIndex);
             Grid.SetRow(SelectionOutline, selected.DayIndex);
@@ -162,17 +160,18 @@ public sealed partial class ContributionHeatmap : UserControl
         {
             SelectionOutline.Visibility = Visibility.Collapsed;
         }
-    }
-
-    private void AnnounceSelection(string previousDescription)
-    {
-        if (previousDescription == ViewModel.SelectedDayDescription)
+        if (!change.ValueChanged)
         {
             return;
         }
 
         var peer = FrameworkElementAutomationPeer.FromElement(this);
-        peer?.RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, previousDescription, ViewModel.SelectedDayDescription);
+        peer?.RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, change.PreviousDescription, change.CurrentDescription);
+        if (!announce || change.Current is null)
+        {
+            return;
+        }
+
         var dayPeer = FrameworkElementAutomationPeer.FromElement(SelectedDayText)
             ?? FrameworkElementAutomationPeer.CreatePeerForElement(SelectedDayText);
         dayPeer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);

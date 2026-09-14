@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build WinUI and test core
+    name: Build WinUI and test core and App state
     runs-on: windows-2025
     timeout-minutes: 20
     defaults:
@@ -49,3 +49,6 @@ jobs:
 
       - name: Run core tests
         run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Run App state tests
+        run: dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true

@@ -36,6 +36,7 @@ milestone. The app currently uses the official WinUI template's placeholder icon
 | `GitHubTray.Core` | Domain snapshot, safe URL/JSON boundary, GitHub CLI process lifecycle, read-only REST and GraphQL queries, settings storage. No WinUI dependency. |
 | `GitHubTray.App` | WinUI views and MVVM state, refresh scheduling, Windows notification-area lifecycle, window placement, browser launching. |
 | `GitHubTray.Core.Tests` | Deterministic response fixtures; no live authentication or network dependency. |
+| `GitHubTray.App.Tests` | Source-linked production heatmap view-model tests without a WinUI runtime or live data. |
 
 The UI owns one current snapshot and prevents overlapping refreshes. A refresh
 resolves `/user` before requesting account-specific data and verifies the account
@@ -85,6 +86,14 @@ Refresh defaults to five minutes and is configurable from one to sixty minutes.
 Errors do not trigger an immediate retry loop; the next scheduled or manual
 refresh is the next attempt. Last-success retention is per process, not durable
 offline caching. Browser links are restricted to HTTPS GitHub.com URLs.
+
+The heatmap view model owns selection transitions and returns immutable previous
+and current selections for keyboard input, pointer input, and calendar replacement.
+Replacement retains the selected date when available and otherwise selects the
+latest returned day; an unavailable calendar clears selection. The native control
+synchronizes the outline after any cell rebuild, even when the accessible value
+is unchanged. Changed values raise UI Automation value-property notifications;
+only changed user selections request a polite live-region announcement.
 
 ## Native UX contract
 

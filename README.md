@@ -26,6 +26,10 @@ Hover over a contribution day for its date and count. The graph is also a single
 keyboard focus stop: use arrow keys to inspect days and Home/End to reach the
 start or end of the period. A failed calendar refresh is shown explicitly and
 does not prevent the other activity sections from loading.
+Refreshing retains the selected date while it is still available; otherwise,
+the latest returned day is selected. Keyboard and pointer selection changes are
+announced to assistive technology; background refresh does not request a live
+announcement.
 
 ## Prerequisites
 
@@ -71,13 +75,27 @@ Use **Quit** to stop the app rather than merely close its panel.
 
 ```powershell
 dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj
+dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj
 .\scripts\Test-RuntimeIdentifiers.ps1
 ```
 
 The core tests use deterministic fixtures and temporary settings files. They do
 not require GitHub authentication or make network requests.
+The App tests compile the production heatmap view model without WinUI and cover
+selection transitions, date retention, and coherent property notifications.
 The runtime checks verify x86/x64/ARM64 selection without machine-local publish
 profiles, including preservation of an explicitly supplied runtime identifier.
+
+For native selection checks, open the running tray panel with a loaded calendar:
+
+```powershell
+powershell.exe -NoProfile -Mta -File .\scripts\Test-ContributionSelection.ps1 -AppPid <PID>
+```
+
+This checks keyboard/pointer selection, focus, and UI Automation value/live-region
+events, and captures outline screenshots in a temporary output directory. It
+restores the initially selected day after the checks.
+The native checks require uninterrupted foreground access to the tray panel.
 
 ## Port plan
 

@@ -10,9 +10,22 @@ public sealed record ContributionPlotDay(ContributionDay Day, int WeekIndex, int
     public string AutomationId => $"ContributionDay_{Day.Date:yyyy-MM-dd}";
 }
 
+public sealed record ContributionSelectionSnapshot(ContributionPlotDay PlotDay, string Description);
+
+public readonly record struct ContributionSelectionChange(
+    ContributionSelectionSnapshot? Previous,
+    ContributionSelectionSnapshot? Current)
+{
+    public string PreviousDescription => Previous?.Description ?? "";
+    public string CurrentDescription => Current?.Description ?? "";
+    public bool ValueChanged => !string.Equals(PreviousDescription, CurrentDescription, StringComparison.Ordinal);
+}
+
 /// <summary>Calendar geometry uses actual dates; missing slots never become zero-count days.</summary>
 public sealed partial class ContributionHeatmapViewModel : ObservableObject
 {
+    private ContributionSelectionSnapshot? _selection;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasDays))]
     public partial IReadOnlyList<ContributionPlotDay> Days { get; set; } = [];
@@ -29,20 +42,17 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
     [ObservableProperty]
     public partial string AccessibleSummary { get; set; } = "Contributions. No calendar is displayed.";
 
-    [ObservableProperty]
-    public partial string SelectedDayDescription { get; set; } = "";
-
     public int WeekCount { get; private set; }
     public int SelectedIndex { get; private set; } = -1;
     public bool HasDays => Days.Count > 0;
-    public ContributionPlotDay? SelectedDay => SelectedIndex >= 0 && SelectedIndex < Days.Count ? Days[SelectedIndex] : null;
+    public ContributionPlotDay? SelectedDay => _selection?.PlotDay;
+    public string SelectedDayDescription => _selection?.Description ?? "";
 
-    public void UpdateCalendar(ContributionCalendar? calendar)
+    public ContributionSelectionChange UpdateCalendar(ContributionCalendar? calendar)
     {
-        var previousDate = SelectedDay?.Day.Date;
+        var previous = _selection;
+        var previousDate = previous?.PlotDay.Day.Date;
         var days = calendar?.Weeks.SelectMany(week => week.Days).OrderBy(day => day.Date).ToArray() ?? [];
-        SelectedIndex = -1;
-        SelectedDayDescription = "";
 
         if (days.Length == 0)
         {
@@ -54,7 +64,7 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
             AccessibleSummary = calendar is null
                 ? "Contributions. No calendar is displayed."
                 : $"{calendar.TotalContributions:N0} contributions. No daily data was returned.";
-            return;
+            return SetSelection(-1, previous);
         }
 
         var first = days[0].Date;
@@ -70,47 +80,67 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
         RangeDescription = $"{first.ToString("D", CultureInfo.CurrentCulture)} through {last.ToString("D", CultureInfo.CurrentCulture)}";
         AccessibleSummary = $"{calendar.TotalContributions:N0} contributions in the last 12 months. {RangeDescription}. Sunday-first calendar.";
         var selectedIndex = Array.FindIndex(days, day => day.Date == previousDate);
-        SelectIndex(selectedIndex >= 0 ? selectedIndex : days.Length - 1);
+        return SetSelection(selectedIndex >= 0 ? selectedIndex : days.Length - 1, previous);
     }
 
-    public void SelectIndex(int index)
+    public ContributionSelectionChange SelectIndex(int index)
     {
         if (!HasDays)
         {
-            return;
+            return new(_selection, _selection);
         }
 
-        SelectedIndex = Math.Clamp(index, 0, Days.Count - 1);
-        var day = Days[SelectedIndex].Day;
-        SelectedDayDescription = $"{day.Date.ToString("ddd, d MMM yyyy", CultureInfo.CurrentCulture)} · {day.Count:N0} {(day.Count == 1 ? "contribution" : "contributions")}";
+        return SetSelection(Math.Clamp(index, 0, Days.Count - 1), _selection);
     }
 
-    public void MoveSelection(int dateOffset)
+    public ContributionSelectionChange MoveSelection(int dateOffset)
     {
-        if (SelectedDay is not { } selected)
+        if (SelectedDay is not { } selected || dateOffset == 0)
         {
-            return;
+            return new(_selection, _selection);
         }
 
-        var target = selected.Day.Date.AddDays(dateOffset);
+        var targetDayNumber = (long)selected.Day.Date.DayNumber + dateOffset;
         // Normally every date is returned. Also handle a partial calendar without
         // inventing entries: choose the nearest real day in the requested direction.
         var index = SelectedIndex;
         if (dateOffset > 0)
         {
-            while (index < Days.Count - 1 && Days[index].Day.Date < target)
+            while (index < Days.Count - 1 && Days[index].Day.Date.DayNumber < targetDayNumber)
             {
                 index++;
             }
         }
         else
         {
-            while (index > 0 && Days[index].Day.Date > target)
+            while (index > 0 && Days[index].Day.Date.DayNumber > targetDayNumber)
             {
                 index--;
             }
         }
 
-        SelectIndex(index);
+        return index == SelectedIndex ? new(_selection, _selection) : SelectIndex(index);
+    }
+
+    private ContributionSelectionChange SetSelection(int index, ContributionSelectionSnapshot? previous)
+    {
+        ContributionSelectionSnapshot? current = null;
+        if (index >= 0)
+        {
+            var plotDay = Days[index];
+            var day = plotDay.Day;
+            current = new(plotDay, $"{day.Date.ToString("ddd, d MMM yyyy", CultureInfo.CurrentCulture)} · {day.Count:N0} {(day.Count == 1 ? "contribution" : "contributions")}");
+        }
+
+        var change = new ContributionSelectionChange(previous, current);
+        SelectedIndex = index;
+        _selection = current;
+        // Observers must see the final index, day, and description together.
+        if (change.ValueChanged)
+        {
+            OnPropertyChanged(nameof(SelectedDayDescription));
+        }
+
+        return change;
     }
 }
