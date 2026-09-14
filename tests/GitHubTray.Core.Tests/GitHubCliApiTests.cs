@@ -11,13 +11,15 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     private const string AuthenticationError = "GitHub sign-in is unavailable or expired. Run 'gh auth login --hostname github.com' in a terminal, then refresh.";
     private const string RateLimitError = "GitHub's API rate limit was reached. Wait before refreshing; previously loaded data is retained.";
 
-    [Fact]
-    public async Task SuccessfulRequestReturnsStdoutUnchangedAndIgnoresStderr()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SuccessfulRequestReturnsStdoutUnchangedAndIgnoresStderr(bool graphQl)
     {
         const string response = "{\"login\":\"octocat\",\"name\":\"Octocat 🐙\"}\n";
         var api = CreateOutputApi(response, SensitiveDiagnostic);
 
-        Assert.Equal(response, await api.GetAsync("user"));
+        Assert.Equal(response, await RequestAsync(api, graphQl));
     }
 
     [Fact]
@@ -50,12 +52,58 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     }
 
     [Fact]
-    public async Task MissingExecutableProducesActionableInstallationError()
+    public async Task GraphQlUsesFixedPostArgumentsAndASingleRawQueryFieldWithoutTracing()
+    {
+        var api = new GitHubCliApi(() =>
+        {
+            var info = fixture.CreateStartInfo("inspect");
+            info.Environment["GH_DEBUG"] = "api";
+            return info;
+        }, TimeSpan.FromSeconds(15));
+
+        using var response = JsonDocument.Parse(await api.QueryAsync(ContributionCalendarParser.Query));
+        var root = response.RootElement;
+        Assert.Equal(
+            ["api", "--hostname", "github.com", "--method", "POST",
+                "--header", "Accept: application/vnd.github+json",
+                "--header", "X-GitHub-Api-Version: 2022-11-28", "graphql",
+                "--raw-field", $"query={ContributionCalendarParser.Query}"],
+            root.GetProperty("Arguments").EnumerateArray().Select(argument => argument.GetString()));
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("Debug").ValueKind);
+        Assert.Equal("1", root.GetProperty("PromptDisabled").GetString());
+        Assert.True(string.IsNullOrEmpty(root.GetProperty("Pager").GetString()));
+        Assert.Equal("1", root.GetProperty("NoColor").GetString());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("mutation { deleteIssue }")]
+    [InlineData("subscription { viewer { login } }")]
+    [InlineData("query { viewer { login } } mutation { deleteIssue }")]
+    [InlineData("query { viewer { login } } query { viewer { login } }")]
+    [InlineData("query($id: ID!) { node(id: $id) { id } }")]
+    [InlineData("query { viewer { contributionsCollection(from: \"2024-01-01\") { startedAt } } }")]
+    [InlineData("# query\nmutation { deleteIssue }")]
+    [InlineData("query { viewer { login }")]
+    [InlineData("query { viewer { login } }}")]
+    public async Task QueryBoundaryRejectsOtherOperationsBeforeLaunchingAProcess(string query)
+    {
+        var api = new GitHubCliApi(() => throw new InvalidOperationException("Must not launch"), TimeSpan.FromSeconds(15));
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => api.QueryAsync(query));
+
+        Assert.Equal("query", error.ParamName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingExecutableProducesActionableInstallationError(bool graphQl)
     {
         var missingExecutable = Path.Combine(fixture.DirectoryPath, "does-not-exist.exe");
         var api = new GitHubCliApi(() => new ProcessStartInfo(missingExecutable), TimeSpan.FromSeconds(15));
 
-        var error = await Assert.ThrowsAsync<GitHubException>(() => api.GetAsync("user"));
+        var error = await Assert.ThrowsAsync<GitHubException>(() => RequestAsync(api, graphQl));
 
         Assert.Equal("GitHub CLI is unavailable. Install gh, run 'gh auth login --hostname github.com' in a terminal, then restart GitHub Tray.", error.Message);
         Assert.IsType<Win32Exception>(error.InnerException);
@@ -83,6 +131,21 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     }
 
     [Theory]
+    [InlineData("HTTP 401", AuthenticationError)]
+    [InlineData("HTTP 429", RateLimitError)]
+    [InlineData("private graphql error", "The GitHub request failed. Check your connection and 'gh auth status --hostname github.com', then refresh.")]
+    public async Task GraphQlProcessFailuresRetainTheSameRedactionBoundary(string diagnostic, string expected)
+    {
+        var api = CreateOutputApi(SensitiveDiagnostic, $"{diagnostic}\n{SensitiveDiagnostic}", 1);
+
+        var error = await Assert.ThrowsAsync<GitHubException>(() => api.QueryAsync(ContributionCalendarParser.Query));
+
+        Assert.Equal(expected, error.Message);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain(SensitiveDiagnostic, error.ToString());
+    }
+
+    [Theory]
     [InlineData("large-stderr-first")]
     [InlineData("large-stdout-first")]
     public async Task BothOutputPipesAreDrainedWithoutDeadlock(string mode)
@@ -93,9 +156,11 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task CancellationAndTimeoutKillOnlyTheLaunchedProcessTree(bool cancelExternally)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task CancellationAndTimeoutKillOnlyTheLaunchedProcessTree(bool cancelExternally, bool graphQl)
     {
         var directory = Path.Combine(fixture.DirectoryPath, Guid.NewGuid().ToString("N"));
         var unrelatedDirectory = Path.Combine(directory, "unrelated");
@@ -110,7 +175,7 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
             await fixture.WaitUntilReadyAsync(unrelatedDirectory);
             var api = new GitHubCliApi(() => fixture.CreateStartInfo("tree", directory),
                 TimeSpan.FromSeconds(cancelExternally ? 30 : 10));
-            request = api.GetAsync("user", cancellation.Token);
+            request = RequestAsync(api, graphQl, cancellation.Token);
             await fixture.WaitUntilReadyAsync(directory);
             root = fixture.OpenProcess(directory, "root");
             child = fixture.OpenProcess(directory, "child");
@@ -166,6 +231,9 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
         info.Environment["GITHUB_TRAY_FIXTURE_EXIT_CODE"] = exitCode.ToString();
         return info;
     }, TimeSpan.FromSeconds(15));
+
+    private static Task<string> RequestAsync(GitHubCliApi api, bool graphQl, CancellationToken cancellationToken = default) =>
+        graphQl ? api.QueryAsync(ContributionCalendarParser.Query, cancellationToken) : api.GetAsync("user", cancellationToken);
 }
 
 public sealed class GitHubProcessFixture : IAsyncLifetime

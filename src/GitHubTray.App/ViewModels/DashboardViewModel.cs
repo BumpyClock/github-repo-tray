@@ -127,6 +127,11 @@ public sealed partial class DashboardViewModel : ObservableObject
     public IReadOnlyList<SectionViewModel> Sections { get; }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
+    [NotifyPropertyChangedFor(nameof(ContributionStatus))]
+    public partial ContributionSection Contributions { get; set; } = new(null, null, null);
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
     [NotifyPropertyChangedFor(nameof(EmptyTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
@@ -136,6 +141,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
     [NotifyPropertyChangedFor(nameof(EmptyTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
+    [NotifyPropertyChangedFor(nameof(ContributionStatus))]
     [NotifyCanExecuteChangedFor(nameof(RefreshCommand))]
     public partial bool IsRefreshing { get; set; } = true;
 
@@ -143,6 +149,8 @@ public sealed partial class DashboardViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
     [NotifyPropertyChangedFor(nameof(EmptyTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
+    [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
+    [NotifyPropertyChangedFor(nameof(ContributionStatus))]
     public partial bool IsAccountVerified { get; set; }
 
     [ObservableProperty]
@@ -195,6 +203,33 @@ public sealed partial class DashboardViewModel : ObservableObject
     public bool HasTrayError => TrayError.Length != 0;
     public bool CanRefresh => !_isShuttingDown && !IsRefreshing;
     public bool CanSaveSettings => !_isShuttingDown && IsSettingsLoaded && !IsSavingSettings;
+    public ContributionCalendar? VisibleContributionCalendar => IsAccountVerified ? Contributions.Calendar : null;
+    public string ContributionStatus
+    {
+        get
+        {
+            if (!IsAccountVerified)
+            {
+                return IsRefreshing ? "Loading contributions · verifying GitHub CLI account…" : "Contributions hidden until the GitHub CLI account is verified.";
+            }
+
+            if (Contributions.Error is { } error)
+            {
+                var lastSuccess = Contributions.UpdatedAt is { } updated ? $" Last success {updated.ToLocalTime():g}." : "";
+                return $"{(Contributions.IsStale ? "Stale contributions" : "Contributions unavailable")}: {error}{lastSuccess}";
+            }
+
+            if (Contributions.Calendar is null)
+            {
+                return IsRefreshing ? "Loading contributions…" : "No contribution calendar was returned.";
+            }
+
+            return IsRefreshing
+                ? "Refreshing contributions · showing the last successful calendar."
+                : Contributions.UpdatedAt is { } timestamp ? $"Updated {timestamp.ToLocalTime():g}" : "Contribution calendar loaded.";
+        }
+    }
+
     public bool IsEmptyVisible => !IsAccountVerified || SelectedSection.Items.Count == 0;
     public string EmptyTitle => IsRefreshing && !IsAccountVerified
         ? "Checking your GitHub account"
@@ -276,6 +311,7 @@ public sealed partial class DashboardViewModel : ObservableObject
             Sections[1].Update(snapshot.PullRequests);
             Sections[2].Update(snapshot.ReviewRequests);
             Sections[3].Update(snapshot.Repositories);
+            Contributions = snapshot.Contributions;
             AccountLabel = string.IsNullOrWhiteSpace(snapshot.User.DisplayName)
                 ? $"@{snapshot.User.Login}"
                 : $"{snapshot.User.DisplayName} · @{snapshot.User.Login}";
