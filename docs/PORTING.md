@@ -34,18 +34,37 @@ milestone. The app currently uses the official WinUI template's placeholder icon
 | Component | Responsibility |
 | --- | --- |
 | `GitHubTray.Core` | Domain snapshot, safe URL/JSON boundary, GitHub CLI process lifecycle, read-only REST and GraphQL queries, settings storage. No WinUI dependency. |
-| `GitHubTray.App` | WinUI views and MVVM state, refresh scheduling, Windows notification-area lifecycle, window placement, browser launching. |
+| `GitHubTray.AppState` | App-owned refresh session: single-flight refresh, retained recovery data, immutable published state, refresh cancellation and draining. References Core, with no WinUI dependency. |
+| `GitHubTray.App` | WinUI views and MVVM projection, native refresh scheduling, settings orchestration, Windows notification-area lifecycle, window placement, browser launching. |
 | `GitHubTray.Core.Tests` | Deterministic response fixtures; no live authentication or network dependency. |
+| `GitHubTray.AppState.Tests` | Production refresh-session and Core behavior with fixture transport responses; no WinUI runtime, live authentication, or network dependency. |
 | `GitHubTray.App.Tests` | Source-linked production heatmap view-model tests without a WinUI runtime or live data. |
 
-The UI owns one current snapshot and prevents overlapping refreshes. A refresh
-resolves `/user` before requesting account-specific data and verifies the account
+The App-owned refresh session distinguishes two kinds of dashboard data:
+
+- **Retained dashboard:** account-scoped data kept privately for recovery after a
+  failed refresh; its presence does not make it eligible for display.
+- **Published dashboard:** data currently eligible for display under a verified
+  account; individual sections may be visibly stale.
+
+The session exposes one immutable current state and shares one in-flight refresh
+across startup, timer, toolbar, keyboard, and tray requests. WinUI projects that
+state into bindings on the UI thread; it does not own a second recovery snapshot.
+An identity failure removes rows and the calendar from the published state and
+the projection, while the session retains recovery data privately.
+
+Core resolves `/user` before requesting account-specific data and verifies the account
 again before publishing the completed snapshot. A detected account change,
 including a mismatched GraphQL viewer, rejects the entire refresh rather than
 mixing data under the original account label. Individual section
 failures keep that section's last successful items and timestamp, clearly marked
 as stale. A different account invalidates the previous snapshot's cached sections.
 An identity lookup failure is an error, not a successful empty dashboard.
+
+Native timers remain in the App, outside the refresh session. On shutdown the
+App stops those timers and cancels settings work; the session stops accepting
+refreshes, cancels and drains its active refresh, and prevents late publication.
+The App also waits for initialization and settings work before closing.
 
 Activity data stays in memory and is not persisted to disk. Only the refresh
 interval is stored locally. A malformed settings file produces a visible warning;

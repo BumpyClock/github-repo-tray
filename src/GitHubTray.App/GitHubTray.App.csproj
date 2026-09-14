@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
+    <ProjectReference Include="..\GitHubTray.AppState\GitHubTray.AppState.csproj" />
     <ProjectReference Include="..\GitHubTray.Core\GitHubTray.Core.csproj" />
   </ItemGroup>
 

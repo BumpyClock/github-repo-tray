@@ -96,7 +96,7 @@ public sealed partial class MainPage : Page
 
     private async Task OpenRowAsync(DashboardRow row)
     {
-        if (!ViewModel.IsAccountVerified)
+        if (!ViewModel.IsAccountVerified || !ViewModel.CanOpenRow(row))
         {
             return;
         }

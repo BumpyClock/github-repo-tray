@@ -75,12 +75,16 @@ Use **Quit** to stop the app rather than merely close its panel.
 
 ```powershell
 dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj
+dotnet test .\tests\GitHubTray.AppState.Tests\GitHubTray.AppState.Tests.csproj
 dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj
 .\scripts\Test-RuntimeIdentifiers.ps1
 ```
 
 The core tests use deterministic fixtures and temporary settings files. They do
 not require GitHub authentication or make network requests.
+The refresh-session tests run the production App-state module and Core fetching
+with fixture responses, without WinUI. They cover overlapping refresh requests,
+account-safe publication and recovery, immutable snapshots, and shutdown.
 The App tests compile the production heatmap view model without WinUI and cover
 selection transitions, date retention, and coherent property notifications.
 The runtime checks verify x86/x64/ARM64 selection without machine-local publish

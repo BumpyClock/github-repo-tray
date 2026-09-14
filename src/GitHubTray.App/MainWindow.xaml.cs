@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using GitHubTray.AppState;
 using GitHubTray.Core;
 using GitHubTray_App.Native;
 using GitHubTray_App.ViewModels;
@@ -27,7 +28,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         var settingsFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, "settings.json");
         ViewModel = new DashboardViewModel(
-            new DashboardService(new GitHubCliApi()),
+            new DashboardRefreshSession(new DashboardService(new GitHubCliApi())),
             new SettingsStore(settingsFile),
             DispatcherQueue);
         _page = new MainPage(ViewModel, this);

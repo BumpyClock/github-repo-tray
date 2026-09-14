@@ -1,9 +1,9 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using GitHubTray.AppState;
 using GitHubTray.Core;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Controls;
@@ -74,6 +74,17 @@ public sealed partial class SectionViewModel : ObservableObject
 
     public bool HasError => !string.IsNullOrWhiteSpace(Error);
 
+    public void Clear()
+    {
+        if (Items.Count != 0)
+        {
+            Items.Clear();
+        }
+
+        Error = "";
+        UpdatedLabel = "Not refreshed yet";
+    }
+
     public void Update(DashboardSection section)
     {
         Items.Clear();
@@ -89,24 +100,24 @@ public sealed partial class SectionViewModel : ObservableObject
     }
 }
 
-/// <summary>All methods are called on the UI dispatcher; the timer never runs overlapping refreshes.</summary>
+/// <summary>All methods are called on the UI dispatcher; the session owns refresh coalescing.</summary>
 public sealed partial class DashboardViewModel : ObservableObject
 {
-    private readonly DashboardService _service;
+    private readonly DashboardRefreshSession _refreshSession;
     private readonly SettingsStore _settingsStore;
     private readonly DispatcherQueueTimer _refreshTimer;
     private readonly DispatcherQueueTimer _clockTimer;
     private readonly CancellationTokenSource _lifetime = new();
-    private DashboardSnapshot? _snapshot;
+    // Redraw marker only; the session owns published-data eligibility and recovery.
+    private DashboardSnapshot? _lastProjectedSnapshot;
     private Task? _initializeTask;
-    private Task? _refreshTask;
     private Task? _saveTask;
     private int _refreshMinutes = 5;
     private bool _isShuttingDown;
 
-    public DashboardViewModel(DashboardService service, SettingsStore settingsStore, DispatcherQueue dispatcher)
+    public DashboardViewModel(DashboardRefreshSession refreshSession, SettingsStore settingsStore, DispatcherQueue dispatcher)
     {
-        _service = service;
+        _refreshSession = refreshSession;
         _settingsStore = settingsStore;
         Sections =
         [
@@ -129,7 +140,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
     [NotifyPropertyChangedFor(nameof(ContributionStatus))]
-    public partial ContributionSection Contributions { get; set; } = new(null, null, null);
+    public partial ContributionSection Contributions { get; private set; } = new(null, null, null);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
@@ -143,7 +154,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
     [NotifyPropertyChangedFor(nameof(ContributionStatus))]
     [NotifyCanExecuteChangedFor(nameof(RefreshCommand))]
-    public partial bool IsRefreshing { get; set; } = true;
+    public partial bool IsRefreshing { get; private set; } = true;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
@@ -151,7 +162,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
     [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
     [NotifyPropertyChangedFor(nameof(ContributionStatus))]
-    public partial bool IsAccountVerified { get; set; }
+    public partial bool IsAccountVerified { get; private set; }
 
     [ObservableProperty]
     public partial string AccountLabel { get; set; } = "Checking GitHub CLI account…";
@@ -278,71 +289,92 @@ public sealed partial class DashboardViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanRefresh))]
-    public Task RefreshAsync()
+    public async Task RefreshAsync()
     {
         if (_isShuttingDown)
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        if (_refreshTask is { IsCompleted: false })
+        if (!_refreshSession.State.IsRefreshing)
         {
-            return _refreshTask;
+            ActionError = "";
         }
 
-        _refreshTask = RefreshCoreAsync();
-        return _refreshTask;
-    }
-
-    private async Task RefreshCoreAsync()
-    {
-        IsRefreshing = true;
-        ActionError = "";
         try
         {
-            var snapshot = await _service.RefreshAsync(_snapshot, _lifetime.Token);
-            if (_isShuttingDown)
+            var refreshTask = _refreshSession.RefreshAsync();
+            ApplyRefreshState(_refreshSession.State);
+            await refreshTask;
+        }
+        finally
+        {
+            if (!_isShuttingDown)
             {
-                return;
+                ApplyRefreshState(_refreshSession.State);
+            }
+        }
+    }
+
+    private void ApplyRefreshState(DashboardSessionState state)
+    {
+        if (state.Snapshot is { } snapshot)
+        {
+            if (!ReferenceEquals(_lastProjectedSnapshot, snapshot))
+            {
+                Sections[0].Update(snapshot.Activity);
+                Sections[1].Update(snapshot.PullRequests);
+                Sections[2].Update(snapshot.ReviewRequests);
+                Sections[3].Update(snapshot.Repositories);
+                Contributions = snapshot.Contributions;
+                _lastProjectedSnapshot = snapshot;
             }
 
-            _snapshot = snapshot;
-            Sections[0].Update(snapshot.Activity);
-            Sections[1].Update(snapshot.PullRequests);
-            Sections[2].Update(snapshot.ReviewRequests);
-            Sections[3].Update(snapshot.Repositories);
-            Contributions = snapshot.Contributions;
             AccountLabel = string.IsNullOrWhiteSpace(snapshot.User.DisplayName)
                 ? $"@{snapshot.User.Login}"
                 : $"{snapshot.User.DisplayName} · @{snapshot.User.Login}";
             AccountDescription = $"Last verified github.com account: @{snapshot.User.Login}. Resolved by gh for this process; environment credentials can take precedence over the stored CLI account.";
             IsAccountVerified = true;
-            RefreshError = "";
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        else
         {
+            IsAccountVerified = false;
+            _lastProjectedSnapshot = null;
+            foreach (var section in Sections)
+            {
+                section.Clear();
+            }
+
+            Contributions = new(null, null, null);
+            if (state.IsRefreshing && state.LastKnownLogin is null && state.Error is null)
+            {
+                AccountLabel = "Checking GitHub CLI account…";
+                AccountDescription = "Uses the current github.com account resolved by GitHub CLI.";
+            }
+            else
+            {
+                AccountLabel = state.LastKnownLogin is null
+                    ? "GitHub CLI account unavailable"
+                    : $"Account unverified · last seen @{state.LastKnownLogin}";
+                AccountDescription = "The current CLI account could not be verified. No previous-account rows are shown.";
+            }
         }
-        catch (GitHubException exception)
-        {
-            SetAccountFailure(exception.Message);
-        }
-        catch (Exception exception) when (exception is IOException or Win32Exception or UnauthorizedAccessException)
-        {
-            SetAccountFailure("An unexpected refresh error occurred. Check GitHub CLI and try again.");
-        }
-        finally
-        {
-            IsRefreshing = false;
-            NotifyEmptyState();
-        }
+
+        RefreshError = state.Error is { } error
+            ? $"{error} Previous data is not current and remains hidden until the account is verified."
+            : "";
+        IsRefreshing = state.IsRefreshing;
+        NotifyEmptyState();
     }
 
-    private void SetAccountFailure(string message)
+    public bool CanOpenRow(DashboardRow row)
     {
-        IsAccountVerified = false;
-        AccountLabel = _snapshot is null ? "GitHub CLI account unavailable" : $"Account unverified · last seen @{_snapshot.User.Login}";
-        AccountDescription = "The current CLI account could not be verified. No previous-account rows are shown.";
-        RefreshError = $"{message} Previous data is not current and remains hidden until the account is verified.";
+        var state = _refreshSession.State;
+        return !_isShuttingDown && !state.IsStopping && state.Snapshot is { } snapshot
+            && (snapshot.Activity.Items.Contains(row.Item)
+                || snapshot.PullRequests.Items.Contains(row.Item)
+                || snapshot.ReviewRequests.Items.Contains(row.Item)
+                || snapshot.Repositories.Items.Contains(row.Item));
     }
 
     private void NotifyEmptyState()
@@ -438,8 +470,19 @@ public sealed partial class DashboardViewModel : ObservableObject
         _clockTimer.Tick -= OnClockTimerTick;
         RefreshCommand.NotifyCanExecuteChanged();
         SaveSettingsCommand.NotifyCanExecuteChanged();
-        await _lifetime.CancelAsync();
-        await Task.WhenAll(_initializeTask ?? Task.CompletedTask, _refreshTask ?? Task.CompletedTask, _saveTask ?? Task.CompletedTask);
-        _lifetime.Dispose();
+        try
+        {
+            var refreshShutdownTask = _refreshSession.ShutdownAsync();
+            ApplyRefreshState(_refreshSession.State);
+            await Task.WhenAll(
+                refreshShutdownTask,
+                _lifetime.CancelAsync(),
+                _initializeTask ?? Task.CompletedTask,
+                _saveTask ?? Task.CompletedTask);
+        }
+        finally
+        {
+            _lifetime.Dispose();
+        }
     }
 }

@@ -52,3 +52,6 @@ jobs:
 
       - name: Run App state tests
         run: dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true
+
+      - name: Run refresh session tests
+        run: dotnet test .\tests\GitHubTray.AppState.Tests\GitHubTray.AppState.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true
