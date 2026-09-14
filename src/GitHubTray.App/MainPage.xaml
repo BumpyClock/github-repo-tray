@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="GitHubTray_App.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:GitHubTray_App"
+    xmlns:controls="using:GitHubTray_App.Controls"
+    xmlns:vm="using:GitHubTray_App.ViewModels"
+    Background="{ThemeResource SubtleFillColorTransparentBrush}">
+    <Page.Resources>
+        <Style x:Key="MenuActionButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+            <Setter Property="Background" Value="{ThemeResource SubtleFillColorTransparentBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource SubtleFillColorTransparentBrush}" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+        </Style>
+    </Page.Resources>
+    <Grid Padding="8" RowSpacing="8">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Key="F5" Invoked="RefreshAccelerator_Invoked" />
+            <KeyboardAccelerator Key="R" Modifiers="Control" Invoked="RefreshAccelerator_Invoked" />
+        </Grid.KeyboardAccelerators>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid ColumnSpacing="8" Margin="8,4,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="4">
+                <TextBlock Text="GitHub Tray" Style="{StaticResource BodyStrongTextBlockStyle}"
+                           AutomationProperties.HeadingLevel="Level1" />
+                <TextBlock Text="{x:Bind ViewModel.AccountLabel, Mode=OneWay}"
+                           TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           AutomationProperties.AutomationId="CurrentAccount"
+                           ToolTipService.ToolTip="{x:Bind ViewModel.AccountDescription, Mode=OneWay}" />
+            </StackPanel>
+            <Button Grid.Column="1" Width="32" Height="32" VerticalAlignment="Top"
+                    Style="{StaticResource MenuActionButtonStyle}"
+                    Click="HideButton_Click" AutomationProperties.AutomationId="HideButton"
+                    AutomationProperties.Name="Hide to notification area" ToolTipService.ToolTip="Hide (Escape)">
+                <FontIcon Glyph="&#xE711;" FontSize="12" />
+            </Button>
+        </Grid>
+
+        <StackPanel Grid.Row="1">
+            <InfoBar IsOpen="{x:Bind ViewModel.HasTrayError, Mode=OneWay}" IsClosable="False"
+                     Severity="Error" Title="Notification area unavailable"
+                     Message="{x:Bind ViewModel.TrayError, Mode=OneWay}"
+                     AutomationProperties.AutomationId="TrayErrorInfoBar">
+                <InfoBar.ActionButton>
+                    <Button Content="Retry tray" Click="RetryTrayButton_Click"
+                            AutomationProperties.AutomationId="RetryTrayButton" AutomationProperties.Name="Retry notification area icon" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+            <InfoBar IsOpen="{x:Bind ViewModel.HasRefreshError, Mode=OneWay}" IsClosable="False"
+                     Severity="Warning" Title="Account check failed"
+                     Message="{x:Bind ViewModel.RefreshError, Mode=OneWay}"
+                     AutomationProperties.AutomationId="RefreshErrorInfoBar" />
+            <InfoBar IsOpen="{x:Bind ViewModel.HasSettingsWarning, Mode=OneWay}" IsClosable="False"
+                     Severity="Warning" Title="Settings need attention"
+                     Message="{x:Bind ViewModel.SettingsWarning, Mode=OneWay}"
+                     AutomationProperties.AutomationId="SettingsWarningInfoBar" />
+            <InfoBar IsOpen="{x:Bind ViewModel.HasActionError, Mode=OneWay}" IsClosable="False"
+                     Severity="Error" Title="Action unavailable"
+                     Message="{x:Bind ViewModel.ActionError, Mode=OneWay}"
+                     AutomationProperties.AutomationId="ActionErrorInfoBar" />
+            <TextBlock Text="Refreshing GitHub…" Style="{StaticResource CaptionTextBlockStyle}"
+                       Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsRefreshing), Mode=OneWay}"
+                       AutomationProperties.AutomationId="RefreshProgress"
+                       AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+
+        <Grid Grid.Row="2" RowSpacing="8"
+              Visibility="{x:Bind local:MainPage.Hidden(ViewModel.IsSettingsOpen), Mode=OneWay}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <controls:ContributionHeatmap Margin="8,0"
+                                          Calendar="{x:Bind ViewModel.VisibleContributionCalendar, Mode=OneWay}"
+                                          Status="{x:Bind ViewModel.ContributionStatus, Mode=OneWay}"
+                                          AutomationProperties.AutomationId="ContributionGraph" />
+            <SelectorBar x:Name="ModeSelector" Grid.Row="1" SelectionChanged="ModeSelector_SelectionChanged"
+                         AutomationProperties.AutomationId="DashboardModes" AutomationProperties.Name="Dashboard section">
+                <SelectorBarItem Text="Activity" IsSelected="True" Tag="0"
+                                 AutomationProperties.AutomationId="ActivityTab" AutomationProperties.Name="Recent GitHub activity" />
+                <SelectorBarItem Text="My PRs" Tag="1"
+                                 AutomationProperties.AutomationId="PullRequestsTab" AutomationProperties.Name="My authored pull requests" />
+                <SelectorBarItem Text="Reviews" Tag="2"
+                                 AutomationProperties.AutomationId="ReviewsTab" AutomationProperties.Name="Review requests" />
+                <SelectorBarItem Text="Repos" Tag="3"
+                                 AutomationProperties.AutomationId="RepositoriesTab" AutomationProperties.Name="Repositories" />
+            </SelectorBar>
+            <Grid Grid.Row="2" ColumnSpacing="8" Margin="8,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{x:Bind ViewModel.SelectedSection.Title, Mode=OneWay, FallbackValue='Activity'}"
+                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                           AutomationProperties.HeadingLevel="Level2"
+                           AutomationProperties.AutomationId="SectionHeading" />
+                <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.SelectedSection.UpdatedLabel, Mode=OneWay, FallbackValue='Not refreshed yet'}"
+                           Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Right" VerticalAlignment="Center"
+                           ToolTipService.ToolTip="{x:Bind ViewModel.SelectedSection.UpdatedLabel, Mode=OneWay, FallbackValue='Not refreshed yet'}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           AutomationProperties.AutomationId="SectionLastUpdated" />
+            </Grid>
+            <InfoBar Grid.Row="3" IsOpen="{x:Bind ViewModel.SelectedSection.HasError, Mode=OneWay, FallbackValue=False}"
+                     IsClosable="False" Severity="Warning" Title="Section refresh failed · data may be stale"
+                     Message="{x:Bind ViewModel.SelectedSection.Error, Mode=OneWay, FallbackValue=''}"
+                     AutomationProperties.AutomationId="SectionErrorInfoBar" />
+            <ListView x:Name="DashboardList" Grid.Row="4"
+                      ItemsSource="{x:Bind ViewModel.SelectedSection.Items, Mode=OneWay, FallbackValue={x:Null}}"
+                      Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsAccountVerified), Mode=OneWay}"
+                      SelectionMode="Single" IsItemClickEnabled="True" ItemClick="DashboardList_ItemClick"
+                      ContainerContentChanging="DashboardList_ContainerContentChanging"
+                      AutomationProperties.AutomationId="DashboardList"
+                      AutomationProperties.Name="{x:Bind ViewModel.SelectedSection.Title, Mode=OneWay, FallbackValue='Activity'}"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                      HorizontalContentAlignment="Stretch">
+                <ListView.ItemContainerTransitions>
+                    <TransitionCollection />
+                </ListView.ItemContainerTransitions>
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Padding" Value="8,0" />
+                        <Setter Property="Margin" Value="0" />
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="vm:DashboardRow">
+                        <Border BorderThickness="0,0,0,1" Padding="0,8"
+                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+                            <Grid ColumnSpacing="8" RowSpacing="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Viewbox Width="14" Height="14" VerticalAlignment="Top" Margin="0,4,0,0"
+                                         AutomationProperties.AccessibilityView="Raw">
+                                    <SymbolIcon Symbol="{x:Bind Icon, Mode=OneTime}"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </Viewbox>
+                                <TextBlock Grid.Column="1" Grid.ColumnSpan="2" Text="{x:Bind Heading, Mode=OneTime}"
+                                           FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
+                                           ToolTipService.ToolTip="{x:Bind Heading, Mode=OneTime}" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                                           Text="{x:Bind SecondaryText, Mode=OneTime}"
+                                           Visibility="{x:Bind local:MainPage.Visible(HasSecondaryText), Mode=OneTime}"
+                                           TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           ToolTipService.ToolTip="{x:Bind SecondaryText, Mode=OneTime}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind Detail, Mode=OneTime}"
+                                           Visibility="{x:Bind local:MainPage.Visible(HasDetail), Mode=OneTime}"
+                                           TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           ToolTipService.ToolTip="{x:Bind Detail, Mode=OneTime}" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="{x:Bind RelativeTimestamp, Mode=OneWay}"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           ToolTipService.ToolTip="{x:Bind Timestamp, Mode=OneTime}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <ScrollViewer Grid.Row="4"
+                          Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsEmptyVisible), Mode=OneWay}"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="16,24" Spacing="8" HorizontalAlignment="Stretch">
+                    <TextBlock Text="{x:Bind ViewModel.EmptyTitle, Mode=OneWay}" TextWrapping="Wrap"
+                               Style="{StaticResource BodyStrongTextBlockStyle}"
+                               AutomationProperties.AutomationId="EmptyStateTitle" />
+                    <TextBlock Text="{x:Bind ViewModel.EmptyMessage, Mode=OneWay}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               AutomationProperties.AutomationId="EmptyStateMessage" />
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                      Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsSettingsOpen), Mode=OneWay}">
+            <StackPanel Spacing="16" Padding="8,0,8,0">
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="BackButton" Click="BackButton_Click"
+                            AutomationProperties.AutomationId="SettingsBackButton" AutomationProperties.Name="Back to dashboard"
+                            ToolTipService.ToolTip="Back to dashboard">
+                        <SymbolIcon Symbol="Back" />
+                    </Button>
+                    <TextBlock Grid.Column="1" Text="Settings" VerticalAlignment="Center"
+                               Style="{StaticResource SubtitleTextBlockStyle}"
+                               AutomationProperties.HeadingLevel="Level2" />
+                </Grid>
+                <TextBox x:Name="RefreshIntervalBox" Header="Refresh interval (minutes)"
+                         Text="{x:Bind ViewModel.RefreshMinutesText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         IsEnabled="{x:Bind ViewModel.IsSettingsLoaded, Mode=OneWay}" InputScope="Number" MaxLength="2"
+                         AutomationProperties.AutomationId="RefreshIntervalTextBox"
+                         AutomationProperties.Name="Refresh interval in minutes"
+                         AutomationProperties.HelpText="Enter a whole number from 1 through 60. Default is 5." />
+                <TextBlock Text="1–60 minutes. Default: 5. Refresh continues while the panel is hidden. No activity is saved to disk."
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button Content="Save interval" Command="{x:Bind ViewModel.SaveSettingsCommand, Mode=OneWay}"
+                        Style="{StaticResource AccentButtonStyle}"
+                        AutomationProperties.AutomationId="SaveSettingsButton" AutomationProperties.Name="Save refresh interval" />
+                <InfoBar IsOpen="{x:Bind ViewModel.HasSettingsStatus, Mode=OneWay}" IsClosable="False"
+                         Severity="Success" Title="Settings saved"
+                         Message="{x:Bind ViewModel.SettingsStatus, Mode=OneWay}"
+                         AutomationProperties.AutomationId="SettingsSavedInfoBar" />
+                <TextBlock Text="GitHub CLI account" Style="{StaticResource BodyStrongTextBlockStyle}"
+                           AutomationProperties.HeadingLevel="Level2" />
+                <TextBlock Text="{x:Bind ViewModel.AccountDescription, Mode=OneWay}" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="SettingsAccountDescription" />
+                <TextBlock Text="GitHub Tray uses your existing gh sign-in for github.com. It never opens sign-in, reads a token, or stores credentials."
+                           TextWrapping="Wrap" />
+                <TextBlock Text="If sign-in is needed, run these commands yourself in a terminal, then return here and choose Refresh:"
+                           TextWrapping="Wrap" />
+                <TextBlock Text="gh auth login --hostname github.com&#x0a;gh auth status --hostname github.com"
+                           IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="GitHubCliInstructions" />
+                <TextBlock Text="GitHub CLI chooses the account. GH_TOKEN, then GITHUB_TOKEN, can override stored credentials; GH_CONFIG_DIR can change which stored CLI configuration is used. Environment changes may require quitting and reopening GitHub Tray. To change a stored account, use gh auth switch --hostname github.com in a terminal. Every refresh verifies the current account again."
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="Closing or pressing Escape hides this panel. Use the notification-area menu to open, refresh, view settings, or quit. GitHub Tray does not change Windows startup settings."
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="3" BorderThickness="0,1,0,0" Padding="0,8,0,0"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+            <StackPanel Spacing="4">
+                <Grid ColumnSpacing="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="SettingsButton" HorizontalAlignment="Stretch"
+                            Style="{StaticResource MenuActionButtonStyle}" Click="SettingsButton_Click"
+                            AutomationProperties.AutomationId="SettingsButton" AutomationProperties.Name="Preferences"
+                            ToolTipService.ToolTip="Preferences">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE713;" FontSize="14" />
+                            <TextBlock Text="Preferences…" />
+                        </StackPanel>
+                    </Button>
+                    <Button Grid.Column="1" Style="{StaticResource MenuActionButtonStyle}"
+                            Command="{x:Bind ViewModel.RefreshCommand, Mode=OneWay}"
+                            AutomationProperties.AutomationId="RefreshButton" AutomationProperties.Name="Refresh all sections"
+                            ToolTipService.ToolTip="Refresh all sections (F5 or Ctrl+R)">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                            <TextBlock Text="Refresh" />
+                        </StackPanel>
+                    </Button>
+                    <Button Grid.Column="2" Content="Quit" Style="{StaticResource MenuActionButtonStyle}" Click="QuitButton_Click"
+                            AutomationProperties.AutomationId="QuitButton" AutomationProperties.Name="Quit GitHub Tray" />
+                </Grid>
+                <Grid ColumnSpacing="8" Margin="8,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{x:Bind ViewModel.RefreshScheduleLabel, Mode=OneWay}"
+                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               AutomationProperties.AutomationId="RefreshSchedule" />
+                    <TextBlock Grid.Column="1" Text="Esc to hide" Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </Grid>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Page>

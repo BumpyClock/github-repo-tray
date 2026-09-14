@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GitHubTray.App/GitHubTray.App.csproj" />
+    <Project Path="src/GitHubTray.Core/GitHubTray.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GitHubTray.Core.Tests/GitHubTray.Core.Tests.csproj" />
+  </Folder>
+</Solution>

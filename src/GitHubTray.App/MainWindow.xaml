@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="GitHubTray_App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="GitHub Tray">
+    <Grid>
+        <Border x:Name="FallbackSurface"
+                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" />
+        <Border x:Name="PageHost" CornerRadius="{ThemeResource OverlayCornerRadius}"
+                BorderThickness="1"
+                BorderBrush="{ThemeResource SurfaceStrokeColorFlyoutBrush}" />
+    </Grid>
+</Window>

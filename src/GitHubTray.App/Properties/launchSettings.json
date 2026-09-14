@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "GitHubTray.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "GitHubTray.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
