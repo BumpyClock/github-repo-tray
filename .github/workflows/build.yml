@@ -2,6 +2,8 @@ name: Windows build
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -35,32 +37,29 @@ jobs:
           dotnet-version: '10.0.401'
           architecture: x64
 
-      - name: Restore WinUI app
-        run: dotnet restore .\src\GitHubTray.App\GitHubTray.App.csproj -p:Platform=x64
+      - name: Restore solution
+        run: dotnet restore .\GitHubTray.slnx -p:Platform=x64
 
       - name: Check runtime identifier selection
         run: .\scripts\Test-RuntimeIdentifiers.ps1
 
-      - name: Build WinUI app
-        run: dotnet build .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Debug --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
+      - name: Build solution
+        run: dotnet build .\GitHubTray.slnx --configuration Debug --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
+
+      - name: Run core tests
+        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-build --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
+
+      - name: Test persistence without reflection-based JSON
+        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore --filter "FullyQualifiedName~SettingsStoreTests|FullyQualifiedName~DashboardCacheStoreTests" -p:Platform=x64 -p:JsonSerializerIsReflectionEnabledByDefault=false -p:ContinuousIntegrationBuild=true
+
+      - name: Run App tests
+        run: dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj --configuration Debug --no-build --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
+
+      - name: Run App state tests
+        run: dotnet test .\tests\GitHubTray.AppState.Tests\GitHubTray.AppState.Tests.csproj --configuration Debug --no-build --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
 
       - name: Publish NativeAOT app
-        run: dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Release --runtime win-x64 -p:Platform=x64 -p:PublishProfile= -p:ContinuousIntegrationBuild=true -warnaserror --output .\artifacts\nativeaot\win-x64
+        run: dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Release --runtime win-x64 --no-restore -p:Platform=x64 -p:PublishProfile= -p:ContinuousIntegrationBuild=true -warnaserror --output .\artifacts\nativeaot\win-x64
 
       - name: Verify NativeAOT executable
         run: .\scripts\Test-NativeAot.ps1 -PublishDirectory .\artifacts\nativeaot\win-x64
-
-      - name: Restore core tests
-        run: dotnet restore .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj
-
-      - name: Run core tests
-        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore -p:ContinuousIntegrationBuild=true
-
-      - name: Test persistence without reflection-based JSON
-        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore --filter "FullyQualifiedName~SettingsStoreTests|FullyQualifiedName~DashboardCacheStoreTests" -p:JsonSerializerIsReflectionEnabledByDefault=false -p:ContinuousIntegrationBuild=true
-
-      - name: Run App state tests
-        run: dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true
-
-      - name: Run refresh session tests
-        run: dotnet test .\tests\GitHubTray.AppState.Tests\GitHubTray.AppState.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true
