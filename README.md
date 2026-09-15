@@ -45,6 +45,8 @@ PRs and checks refresh together on the existing schedule or with **Refresh**
 authored PRs or review requests, 10 labels and 100 check contexts per PR, including
 legacy commit statuses. Truncated lists disclose the total instead of claiming
 exact progress.
+The visible CI summary is prepared with each card; individual check-detail rows
+are created only when you open its checks flyout and reused for that snapshot.
 Activity groups the latest 30 returned events, so it can contain fewer than 30
 cards; its event count is for that fetched window, not the PR's entire timeline.
 One bounded GraphQL batch loads current details for the PRs referenced by those
@@ -157,6 +159,13 @@ Closing the panel or pressing Escape hides it to the notification area. Reopen
 it from its tray icon. The tray menu provides Open, Refresh, Settings, and Quit.
 Use **Quit** to stop the app rather than merely close its panel.
 
+On first launch, the initial refresh starts before the window is constructed and
+overlaps UI initialization and settings loading. The panel still opens immediately
+with loading feedback; it does not wait for GitHub before appearing. Network
+requests and account verification must finish before fresh data can be shown.
+Subsequent tray opens use the current verified in-memory snapshot, with periodic
+refresh continuing while the panel is hidden.
+
 Before redeploying, quit the running app and let any previous
 `winapp run --debug-output` session end. A debugger-attached instance can hold
 the MSIX package in servicing and leave another launch waiting at
@@ -182,6 +191,9 @@ account-safe publication and recovery, immutable snapshots, and shutdown.
 The App tests compile the production heatmap view model and viewport geometry
 without WinUI and cover selection transitions, date retention, coherent property
 notifications, pixel-aligned preset sizes, and right-edge anchoring.
+They also cover startup fetch/setup overlap, single-flight handoff and shutdown,
+deferred check-detail creation and recycling, and hidden-panel presentation-clock
+behavior. These lifecycle tests use fixture data rather than live GitHub requests.
 The runtime checks verify x86/x64/ARM64 selection without machine-local publish
 profiles, including preservation of an explicitly supplied runtime identifier.
 

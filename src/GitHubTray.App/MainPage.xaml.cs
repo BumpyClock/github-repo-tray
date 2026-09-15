@@ -31,6 +31,7 @@ public sealed partial class MainPage : Page
 
     public void SetPanelVisible(bool visible)
     {
+        ViewModel.SetPanelVisible(visible);
         ContributionGraph.SetPanelVisible(visible);
         if (visible)
         {

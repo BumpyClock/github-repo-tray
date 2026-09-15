@@ -110,10 +110,12 @@ public sealed partial class SectionViewModel : ObservableObject
 /// <summary>All methods are called on the UI dispatcher; the session owns refresh coalescing.</summary>
 public sealed partial class DashboardViewModel : ObservableObject
 {
+    private readonly DashboardStartup _startup;
     private readonly DashboardRefreshSession _refreshSession;
     private readonly SettingsStore _settingsStore;
     private readonly DispatcherQueueTimer _refreshTimer;
     private readonly DispatcherQueueTimer _clockTimer;
+    private readonly DashboardPresentationClock _presentationClock;
     private readonly DispatcherQueueTimer _preferenceSaveTimer;
     private readonly CancellationTokenSource _lifetime = new();
     // Last UI projection, never recovery data; the session owns publication eligibility.
@@ -129,9 +131,10 @@ public sealed partial class DashboardViewModel : ObservableObject
     private string _settingsSaveWarning = "";
     private bool _isShuttingDown;
 
-    public DashboardViewModel(DashboardRefreshSession refreshSession, SettingsStore settingsStore, DispatcherQueue dispatcher)
+    internal DashboardViewModel(DashboardStartup startup, SettingsStore settingsStore, DispatcherQueue dispatcher)
     {
-        _refreshSession = refreshSession;
+        _startup = startup;
+        _refreshSession = startup.Session;
         _settingsStore = settingsStore;
         Sections =
         [
@@ -147,6 +150,7 @@ public sealed partial class DashboardViewModel : ObservableObject
         _clockTimer = dispatcher.CreateTimer();
         _clockTimer.Interval = TimeSpan.FromMinutes(1);
         _clockTimer.Tick += OnClockTimerTick;
+        _presentationClock = new(_clockTimer.Start, _clockTimer.Stop, UpdateClock);
         _preferenceSaveTimer = dispatcher.CreateTimer();
         _preferenceSaveTimer.Interval = TimeSpan.FromMilliseconds(300);
         _preferenceSaveTimer.IsRepeating = false;
@@ -326,9 +330,16 @@ public sealed partial class DashboardViewModel : ObservableObject
                 ? "Choose Refresh to try again. Other sections may still be available."
                 : SelectedSection.EmptyMessage;
 
-    public Task InitializeAsync() => _initializeTask ??= InitializeCoreAsync();
+    public Task InitializeAsync() => _initializeTask ??=
+        _startup.InitializeAsync(InitializeSettingsAsync, ApplyStartupState);
 
-    private async Task InitializeCoreAsync()
+    private void ApplyStartupState(DashboardSessionState state)
+    {
+        if (!_isShuttingDown)
+            ApplyRefreshState(state);
+    }
+
+    private async Task InitializeSettingsAsync()
     {
         try
         {
@@ -356,8 +367,7 @@ public sealed partial class DashboardViewModel : ObservableObject
         if (!_isShuttingDown)
         {
             _refreshTimer.Start();
-            _clockTimer.Start();
-            await RefreshAsync();
+            _presentationClock.Initialize();
         }
     }
 
@@ -577,7 +587,11 @@ public sealed partial class DashboardViewModel : ObservableObject
 
     private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) => await RefreshAsync();
 
-    private void OnClockTimerTick(DispatcherQueueTimer sender, object args)
+    public void SetPanelVisible(bool isVisible) => _presentationClock.SetVisible(isVisible);
+
+    private void OnClockTimerTick(DispatcherQueueTimer sender, object args) => _presentationClock.Tick();
+
+    private void UpdateClock()
     {
         foreach (var section in Sections)
         {
@@ -598,7 +612,7 @@ public sealed partial class DashboardViewModel : ObservableObject
         IsSettingsLoaded = false;
         _refreshTimer.Stop();
         _refreshTimer.Tick -= OnRefreshTimerTick;
-        _clockTimer.Stop();
+        _presentationClock.Stop();
         _clockTimer.Tick -= OnClockTimerTick;
         _preferenceSaveTimer.Stop();
         _preferenceSaveTimer.Tick -= OnPreferenceSaveTimerTick;
@@ -606,7 +620,7 @@ public sealed partial class DashboardViewModel : ObservableObject
         SaveSettingsCommand.NotifyCanExecuteChanged();
         try
         {
-            var refreshShutdownTask = _refreshSession.ShutdownAsync();
+            var refreshShutdownTask = _startup.DisposeAsync().AsTask();
             ApplyRefreshState(_refreshSession.State);
             try
             {

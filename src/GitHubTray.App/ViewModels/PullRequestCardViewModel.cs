@@ -29,6 +29,8 @@ public sealed class PullRequestCardViewModel : ObservableObject
     private const int MaxLabelChips = 6;
 
     private string _relativeTimestamp = "";
+    private readonly ImmutableArray<PullRequestCheck> _checkItems;
+    private IReadOnlyList<PullRequestCheckViewModel>? _checks;
 
     public PullRequestCardViewModel(DashboardItem item, bool isStale, DateTimeOffset? now = null)
     {
@@ -86,7 +88,7 @@ public sealed class PullRequestCardViewModel : ObservableObject
 
         var checks = details.Checks;
         var items = checks.Items.IsDefault ? ImmutableArray<PullRequestCheck>.Empty : checks.Items;
-        Checks = items.Select(check => new PullRequestCheckViewModel(check)).ToArray();
+        _checkItems = items;
         IsChecksTruncated = items.Length < checks.TotalCount;
         CheckCountLabel = IsChecksTruncated
             ? $"Showing {items.Length} of {checks.TotalCount} checks"
@@ -150,8 +152,11 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public bool HasLabels => LabelCount > 0;
     public int AdditionalLabelCount { get; }
     public string LabelsToolTip { get; }
-    public IReadOnlyList<PullRequestCheckViewModel> Checks { get; }
-    public bool HasChecks => Checks.Count != 0;
+    /// <summary>Individual rows are materialized once, when the check details are requested.</summary>
+    public IReadOnlyList<PullRequestCheckViewModel> Checks =>
+        _checks ??= _checkItems.Select(check => new PullRequestCheckViewModel(check)).ToArray();
+    internal bool HasCreatedCheckDetails => _checks is not null;
+    public bool HasChecks => !_checkItems.IsEmpty;
     public bool IsChecksTruncated { get; }
     public string CheckCountLabel { get; }
     public string ChecksSummary { get; }

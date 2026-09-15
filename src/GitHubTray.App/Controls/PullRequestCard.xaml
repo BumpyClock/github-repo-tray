@@ -318,7 +318,7 @@
                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             <TextBlock Text="{x:Bind Data.EmptyChecksMessage, Mode=OneWay}" TextWrapping="Wrap"
                                                        Visibility="{x:Bind local:PullRequestCard.Hidden(Data.HasChecks), Mode=OneWay}" />
-                                            <ItemsControl ItemsSource="{x:Bind Data.Checks, Mode=OneWay}" IsTabStop="False">
+                                            <ItemsControl x:Name="ChecksItems" IsTabStop="False">
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate x:DataType="vm:PullRequestCheckViewModel">
                                                         <Border Padding="0,8" BorderThickness="0,1,0,0"

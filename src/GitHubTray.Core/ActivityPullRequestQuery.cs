@@ -9,6 +9,9 @@ internal sealed record ActivityPullRequestReference(string Repository, int Numbe
 
 internal static class ActivityPullRequestQuery
 {
+    private static readonly string Fragment =
+        $"fragment ActivityPullRequestDetails on PullRequest {{\n{PullRequestParser.Selection}\n}}";
+
     internal static string Query(IReadOnlyList<ActivityPullRequestReference> references)
     {
         if (references.Count is < 1 or > DashboardService.ItemLimit)
@@ -24,12 +27,12 @@ internal static class ActivityPullRequestQuery
             return $$"""
                 pr{{index}}: repository(owner: "{{segments[0]}}", name: "{{segments[1]}}") {
                   pullRequest(number: {{reference.Number}}) {
-                    {{PullRequestParser.Selection}}
+                    ...ActivityPullRequestDetails
                   }
                 }
                 """;
         });
-        return "query ActivityPullRequests {\nviewer { login }\n" + string.Join("\n", selections) + "\n}";
+        return "query ActivityPullRequests {\nviewer { login }\n" + string.Join("\n", selections) + "\n}\n" + Fragment;
     }
 
     internal static bool IsSupportedQuery(string query)

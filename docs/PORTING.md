@@ -65,6 +65,15 @@ Native timers remain in the App, outside the refresh session. On shutdown the
 App stops those timers and cancels settings work; the session stops accepting
 refreshes, cancels and drains its active refresh, and prevents late publication.
 The App also waits for initialization and settings work before closing.
+While hidden, the panel stops only its local timestamp/countdown clock and catches
+up on reveal. Scheduled API refresh continues at the configured interval.
+
+The primary instance starts its initial refresh before constructing the window.
+Window initialization adopts that exact session and refresh task, including an
+already-completed task, rather than issuing a second startup refresh. Settings
+loading runs independently of the initial data projection. The panel opens
+immediately with loading feedback; early fetching overlaps setup without delaying
+the first show or weakening the account-verification boundary.
 
 Activity data stays in memory and is not persisted to disk. The refresh interval
 and contribution cell-size preset are stored locally. A malformed settings file produces a visible warning;
@@ -138,10 +147,18 @@ Unknown, queued, running, cancelled, neutral, skipped, and action-required check
 retain distinct states. PR metadata and checks are one immutable snapshot, so a
 refresh never attaches old checks to a new head commit. Each PR query verifies
 the GraphQL viewer in addition to the surrounding REST identity checks.
+Cards prepare summary text eagerly, but defer individual check-detail viewmodels
+and their list source until the checks flyout opens. Details are reused only for
+that card's snapshot and are replaced when a recycled card receives new data.
 The CLI boundary permits only the exact generated PR operations (validated login
 or repository/number references, fixed selections and limits); arbitrary GraphQL
 arguments and mutations remain rejected. There are no per-PR fan-out requests or
 new polling timers.
+The activity batch shares one fixed `PullRequest` fragment across its aliases,
+so metadata and check selections appear only once in the request. The complete
+document, including that fragment, remains subject to exact allowlist validation.
+Already-cancelled requests are rejected before preparing or starting a CLI process;
+input validation still runs first.
 
 My PRs includes open, closed, and merged authored PRs, ordered by update time.
 Reviews continues to show open requests awaiting the account's review.
@@ -179,6 +196,11 @@ latest returned day; an unavailable calendar clears selection. The native contro
 synchronizes the outline after any cell rebuild, even when the accessible value
 is unchanged. Changed values raise UI Automation value-property notifications;
 only changed user selections request a polite live-region announcement.
+Returning to the present reuses cell geometry when viewport width, DPI, week
+count, and preset are unchanged, while still restoring selection and scroll
+position. Replacing cells or reactivating the graph invalidates that geometry.
+Skeleton updates reuse the running animation when its targets and stagger
+origin are unchanged; hiding, unloading, or disabling motion stops it.
 
 ## Native UX contract
 

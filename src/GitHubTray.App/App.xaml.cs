@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using GitHubTray.AppState;
+using GitHubTray.Core;
+using GitHubTray_App.ViewModels;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
@@ -22,7 +25,9 @@ public partial class App : Application
         Debug.WriteLine("GitHub Tray: resolving the primary instance.");
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _instance = AppInstance.FindOrRegisterForKey("GitHubTray.Primary");
-        if (!_instance.IsCurrent)
+        var startup = DashboardStartup.StartIfPrimary(_instance.IsCurrent,
+            static () => new DashboardRefreshSession(new DashboardService(new GitHubCliApi())));
+        if (startup is null)
         {
             // No tray window, timer, or API client is created in secondary instances.
             await _instance.RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs());
@@ -32,7 +37,7 @@ public partial class App : Application
 
         _instance.Activated += Instance_Activated;
         Debug.WriteLine("GitHub Tray: creating the native panel.");
-        _window = new MainWindow();
+        _window = await startup.CreateWindowAsync(static initial => new MainWindow(initial));
         _window.Closed += Window_Closed;
         _window.ShowPanel();
         Debug.WriteLine("GitHub Tray: loading account data.");

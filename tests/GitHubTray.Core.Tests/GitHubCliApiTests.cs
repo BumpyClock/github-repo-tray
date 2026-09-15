@@ -130,13 +130,96 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
             query + "\nmutation { deleteIssue }",
             query.Replace("query ActivityPullRequests", "mutation ActivityPullRequests", StringComparison.Ordinal),
             query.Replace("first: 100", "first: 200", StringComparison.Ordinal),
-            query.Replace("pr1:", "pr0:", StringComparison.Ordinal)
+            query.Replace("pr1:", "pr0:", StringComparison.Ordinal),
+            query.Replace("...ActivityPullRequestDetails", "...OtherDetails", StringComparison.Ordinal),
+            query.Replace("ActivityPullRequestDetails", "OtherDetails", StringComparison.Ordinal),
+            query.Replace("on PullRequest", "on Issue", StringComparison.Ordinal),
+            query.Replace("headRefName", "body", StringComparison.Ordinal),
+            query.Replace("labels(first: 10)", "labels(first: 11)", StringComparison.Ordinal),
+            query.Replace("commits(last: 1)", "commits(last: 2)", StringComparison.Ordinal),
+            query + "\nfragment Extra on PullRequest { body }"
         })
             await Assert.ThrowsAsync<ArgumentException>(() => blockedApi.QueryAsync(invalid));
         Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query([]));
         Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query(
             Enumerable.Range(1, 31).Select(number => new ActivityPullRequestReference("org/repo", number)).ToArray()));
         Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query([new("org/repo\") { deleteIssue }", 42)]));
+    }
+
+    [Fact]
+    public async Task MaximumActivityBatchUsesOneFixedFragmentAndOneRawQueryArgument()
+    {
+        var references = Enumerable.Range(1, 30)
+            .Select(number => new ActivityPullRequestReference("octocat/tray", number)).ToArray();
+        var query = ActivityPullRequestQuery.Query(references);
+        var api = new GitHubCliApi(() => fixture.CreateStartInfo("inspect"), TimeSpan.FromSeconds(15));
+
+        using var response = JsonDocument.Parse(await api.QueryAsync(query));
+
+        var arguments = response.RootElement.GetProperty("Arguments").EnumerateArray()
+            .Select(argument => Assert.IsType<string>(argument.GetString())).ToArray();
+        Assert.Equal(
+            ["api", "--hostname", "github.com", "--method", "POST",
+                "--header", "Accept: application/vnd.github+json",
+                "--header", "X-GitHub-Api-Version: 2022-11-28", "graphql",
+                "--raw-field", $"query={query}"],
+            arguments);
+        Assert.Equal(1, query.Split("fragment ActivityPullRequestDetails on PullRequest").Length - 1);
+        Assert.Equal(30, query.Split("...ActivityPullRequestDetails").Length - 1);
+        Assert.Equal(1, query.Split("contexts(first: 100)").Length - 1);
+        Assert.Equal(1, query.Split("labels(first: 10)").Length - 1);
+        Assert.Equal(1, query.Split("commits(last: 1)").Length - 1);
+        Assert.True(query.Length < 5_000, $"The compact batch was {query.Length} characters.");
+        var normalizedQuery = query.Replace("\r\n", "\n", StringComparison.Ordinal);
+        for (var index = 0; index < references.Length; index++)
+        {
+            Assert.Contains(
+                $"pr{index}: repository(owner: \"octocat\", name: \"tray\") {{\n  pullRequest(number: {index + 1})",
+                normalizedQuery);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreCancelledRequestDoesNotPrepareOrStartAProcess(bool graphQl)
+    {
+        var factoryCalls = 0;
+        var api = new GitHubCliApi(() =>
+        {
+            factoryCalls++;
+            throw new InvalidOperationException("Must not prepare a process.");
+        }, TimeSpan.FromSeconds(15));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => RequestAsync(api, graphQl, cancellation.Token));
+
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Equal(0, factoryCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreCancelledInvalidRequestStillReportsArgumentValidation(bool graphQl)
+    {
+        var factoryCalls = 0;
+        var api = new GitHubCliApi(() =>
+        {
+            factoryCalls++;
+            throw new InvalidOperationException("Must not prepare a process.");
+        }, TimeSpan.FromSeconds(15));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => graphQl
+            ? api.QueryAsync("mutation { deleteIssue }", cancellation.Token)
+            : api.GetAsync("https://example.com/user", cancellation.Token));
+
+        Assert.Equal(graphQl ? "query" : "endpoint", error.ParamName);
+        Assert.Equal(0, factoryCalls);
     }
 
     [Theory]

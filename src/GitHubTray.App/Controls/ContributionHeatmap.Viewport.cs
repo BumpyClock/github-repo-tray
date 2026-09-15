@@ -16,6 +16,7 @@ public sealed partial class ContributionHeatmap
 
     private ContributionViewportAnchor? _pendingAnchor;
     private ContributionCellLayout _cellLayout = new(8, 10, 10, 1, 1, 1);
+    private (double Scale, double Width, int Weeks, ContributionCellSizePreset Preset)? _appliedViewport;
     private bool _returnToPresent = true;
     private bool _layingOut;
     private int _plotWeekCount;
@@ -53,31 +54,36 @@ public sealed partial class ContributionHeatmap
             var anchor = _returnToPresent ? new ContributionViewportAnchor(true, _plotWeekCount)
                 : _pendingAnchor ?? CaptureViewport();
             var scale = XamlRoot.RasterizationScale;
-            _cellLayout = ContributionViewport.GetCellLayout(scale, PlotScroll.ViewportWidth, _plotWeekCount, CellSizePreset);
-            for (var week = 0; week < CalendarGrid.ColumnDefinitions.Count; week++)
+            var viewport = (scale, PlotScroll.ViewportWidth, _plotWeekCount, CellSizePreset);
+            // Returning to the present still restores selection and scroll position, but
+            // unchanged inputs do not require rewriting every cell or forcing layout.
+            // RebuildPlot invalidates this snapshot whenever the children are replaced.
+            if (_appliedViewport != viewport)
             {
-                CalendarGrid.ColumnDefinitions[week].Width = new GridLength(
-                    ContributionViewport.GetWeekCell(_cellLayout, week, scale).WeekPitch);
+                _cellLayout = ContributionViewport.GetCellLayout(scale, PlotScroll.ViewportWidth, _plotWeekCount, CellSizePreset);
+                for (var week = 0; week < CalendarGrid.ColumnDefinitions.Count; week++)
+                {
+                    CalendarGrid.ColumnDefinitions[week].Width = new GridLength(
+                        ContributionViewport.GetWeekCell(_cellLayout, week, scale).WeekPitch);
+                }
+                foreach (var row in CalendarGrid.RowDefinitions)
+                {
+                    row.Height = new GridLength(_cellLayout.RowPitch);
+                }
+                CalendarGrid.Width = Math.Round(_plotWeekCount * _cellLayout.WeekPitch * scale) / scale;
+                CalendarGrid.Height = 7 * _cellLayout.RowPitch;
+                PlotScroll.Padding = new Thickness(0, 0, 0,
+                    ContributionViewport.GetScrollbarSpace(CalendarGrid.Width, PlotScroll.ViewportWidth));
+                GraphContainer.Height = _cellLayout.GetPlotHeight(CalendarGrid.Width, PlotScroll.ViewportWidth);
+                foreach (var child in CalendarGrid.Children.OfType<FrameworkElement>())
+                {
+                    LayoutCell(child);
+                }
+                SelectionOutline.BorderThickness = new Thickness(_cellLayout.StrokeThickness);
+                CalendarGrid.UpdateLayout();
+                _appliedViewport = viewport;
             }
-            foreach (var row in CalendarGrid.RowDefinitions)
-            {
-                row.Height = new GridLength(_cellLayout.RowPitch);
-            }
-            CalendarGrid.Width = Math.Round(_plotWeekCount * _cellLayout.WeekPitch * scale) / scale;
-            CalendarGrid.Height = 7 * _cellLayout.RowPitch;
-            PlotScroll.Padding = new Thickness(0, 0, 0,
-                ContributionViewport.GetScrollbarSpace(CalendarGrid.Width, PlotScroll.ViewportWidth));
-            GraphContainer.Height = _cellLayout.GetPlotHeight(CalendarGrid.Width, PlotScroll.ViewportWidth);
-            foreach (var child in CalendarGrid.Children.OfType<FrameworkElement>())
-            {
-                LayoutCell(child);
-            }
-            SelectionOutline.BorderThickness = new Thickness(_cellLayout.StrokeThickness);
-            CalendarGrid.UpdateLayout();
-            PlotOverlay.Clip = new RectangleGeometry
-            {
-                Rect = new Rect(0, 0, PlotOverlay.ActualWidth, PlotOverlay.ActualHeight)
-            };
+            UpdatePlotClip();
             var offset = ContributionViewport.Restore(anchor, PlotScroll.ViewportWidth, _cellLayout.WeekPitch, _plotWeekCount);
             _returnToPresent = false;
             _pendingAnchor = null;
@@ -87,6 +93,21 @@ public sealed partial class ContributionHeatmap
         finally
         {
             _layingOut = false;
+        }
+    }
+
+    private void UpdatePlotClip()
+    {
+        // Overlay bounds can change without changing the cell geometry.
+        if (PlotOverlay.Clip is not RectangleGeometry clip)
+        {
+            clip = new RectangleGeometry();
+            PlotOverlay.Clip = clip;
+        }
+        var bounds = new Rect(0, 0, PlotOverlay.ActualWidth, PlotOverlay.ActualHeight);
+        if (!clip.Rect.Equals(bounds))
+        {
+            clip.Rect = bounds;
         }
     }
 

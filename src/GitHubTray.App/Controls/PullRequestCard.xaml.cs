@@ -15,7 +15,7 @@ public sealed partial class PullRequestCard : UserControl
 {
     private static readonly AccessibilitySettings Accessibility = new();
 
-    private PullRequestCardViewModel? _flyoutData;
+    private readonly PullRequestChecksFlyoutState _checksFlyoutState = new();
 
     public static readonly DependencyProperty DataProperty = DependencyProperty.Register(
         nameof(Data), typeof(PullRequestCardViewModel), typeof(PullRequestCard), new PropertyMetadata(null, OnDataChanged));
@@ -94,7 +94,8 @@ public sealed partial class PullRequestCard : UserControl
     {
         var card = (PullRequestCard)sender;
         // A recycled row must never leave a flyout acting on the old PR.
-        card._flyoutData = null;
+        card._checksFlyoutState.Reset();
+        card.ChecksItems.ItemsSource = null;
         card.ChecksFlyout.Hide();
         card.UpdateStateAppearance();
         card.AuthorPicture.ProfilePicture = null;
@@ -126,12 +127,14 @@ public sealed partial class PullRequestCard : UserControl
             args.Handled = true;
     }
 
-    private void ChecksFlyout_Opening(object? sender, object args) => _flyoutData = Data;
-    private void ChecksFlyout_Closed(object? sender, object args) => _flyoutData = null;
+    private void ChecksFlyout_Opening(object? sender, object args) =>
+        ChecksItems.ItemsSource = _checksFlyoutState.Open(Data);
+
+    private void ChecksFlyout_Closed(object? sender, object args) => _checksFlyoutState.Close();
 
     private void OpenChecks_Click(object sender, RoutedEventArgs args)
     {
-        if (_flyoutData is { } data && ReferenceEquals(Data, data))
+        if (_checksFlyoutState.GetOpenData(Data) is { } data)
         {
             ChecksFlyout.Hide();
             OpenChecksRequested?.Invoke(this, new PullRequestActionEventArgs(data.Id));

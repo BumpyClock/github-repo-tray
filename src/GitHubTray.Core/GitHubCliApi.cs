@@ -41,6 +41,7 @@ public sealed class GitHubCliApi : IGitHubApi
     private async Task<string> ExecuteAsync(
         string endpoint, string method, string? query, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var startInfo = _createStartInfo();
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;

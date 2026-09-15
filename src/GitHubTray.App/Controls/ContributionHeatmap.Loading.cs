@@ -18,7 +18,9 @@ public sealed partial class ContributionHeatmap
 
     private readonly UISettings _uiSettings = new();
     private readonly AccessibilitySettings _accessibilitySettings = new();
+    private readonly List<Border> _skeletonCells = [];
     private Storyboard? _shimmer;
+    private int _shimmerFirstVisibleWeek;
     private bool _panelVisible = true;
 
     public bool IsLoading
@@ -44,7 +46,10 @@ public sealed partial class ContributionHeatmap
         {
             control.RebuildPlot();
         }
-        control.UpdateShimmer();
+        else
+        {
+            control.UpdateShimmer();
+        }
     }
 
     private static void OnActiveChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
@@ -52,6 +57,9 @@ public sealed partial class ContributionHeatmap
         var control = (ContributionHeatmap)sender;
         if (control.CalendarGrid is not null)
         {
+            // Preferences collapse the graph. Its scroll extent must be settled
+            // again on activation even if it returns to the same dimensions.
+            control._appliedViewport = null;
             if (control.IsActive)
             {
                 // Let the parent's visibility binding finish before restoring the viewport.
@@ -79,8 +87,6 @@ public sealed partial class ContributionHeatmap
         }
         _uiSettings.ColorValuesChanged += MotionSettingsChanged;
         RebuildPlot();
-        ApplyViewport();
-        UpdateShimmer();
     }
 
     private void Heatmap_Unloaded(object sender, RoutedEventArgs args)
@@ -91,8 +97,8 @@ public sealed partial class ContributionHeatmap
             _uiSettings.AnimationsEnabledChanged -= MotionSettingsChanged;
         }
         _uiSettings.ColorValuesChanged -= MotionSettingsChanged;
-        _shimmer?.Stop();
-        _shimmer = null;
+        StopShimmer();
+        _appliedViewport = null;
     }
 
     private void MotionSettingsChanged(UISettings sender, object args) =>
@@ -101,6 +107,11 @@ public sealed partial class ContributionHeatmap
     private void RebuildPlot()
     {
         _pendingAnchor ??= CaptureViewport();
+        // Release animation targets before detaching cells, even if the new plot
+        // has exactly the same dimensions as the old one.
+        StopShimmer();
+        _skeletonCells.Clear();
+        _appliedViewport = null;
         var today = DateOnly.FromDateTime(DateTime.Today);
         var firstDay = ViewModel.HasDays ? ViewModel.Days[0].Day.Date : today.AddYears(-1);
         var lastDay = ViewModel.HasDays ? ViewModel.Days[^1].Day.Date : today;
@@ -135,6 +146,7 @@ public sealed partial class ContributionHeatmap
                 Grid.SetColumn(cell, (day.DayNumber - firstWeek.DayNumber) / 7);
                 Grid.SetRow(cell, (int)day.DayOfWeek);
                 CalendarGrid.Children.Add(cell);
+                _skeletonCells.Add(cell);
             }
         }
 
@@ -146,23 +158,23 @@ public sealed partial class ContributionHeatmap
 
     private void UpdateShimmer()
     {
-        _shimmer?.Stop();
-        _shimmer = null;
-        var cells = CalendarGrid.Children.OfType<Border>()
-            .Where(cell => !ReferenceEquals(cell, SelectionOutline)).ToArray();
-        foreach (var cell in cells)
-        {
-            cell.Opacity = 1;
-        }
         if (!IsLoaded || !_panelVisible || !IsActive || !IsLoading || ViewModel.HasDays
-            || !_uiSettings.AnimationsEnabled || _accessibilitySettings.HighContrast)
+            || _skeletonCells.Count == 0 || !_uiSettings.AnimationsEnabled || _accessibilitySettings.HighContrast)
+        {
+            StopShimmer();
+            return;
+        }
+
+        var firstVisibleWeek = (int)Math.Floor(PlotScroll.HorizontalOffset / _cellLayout.WeekPitch);
+        if (_shimmer is not null && _shimmerFirstVisibleWeek == firstVisibleWeek)
         {
             return;
         }
 
+        StopShimmer();
         _shimmer = new Storyboard();
-        var firstVisibleWeek = (int)Math.Floor(PlotScroll.HorizontalOffset / _cellLayout.WeekPitch);
-        foreach (var cell in cells)
+        _shimmerFirstVisibleWeek = firstVisibleWeek;
+        foreach (var cell in _skeletonCells)
         {
             cell.Opacity = 0.6;
             var animation = new DoubleAnimation
@@ -179,5 +191,19 @@ public sealed partial class ContributionHeatmap
             _shimmer.Children.Add(animation);
         }
         _shimmer.Begin();
+    }
+
+    private void StopShimmer()
+    {
+        if (_shimmer is null)
+        {
+            return;
+        }
+        _shimmer.Stop();
+        _shimmer = null;
+        foreach (var cell in _skeletonCells)
+        {
+            cell.Opacity = 1;
+        }
     }
 }
