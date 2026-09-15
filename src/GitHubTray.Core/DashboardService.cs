@@ -219,9 +219,20 @@ public sealed class DashboardService
         };
         if (_cacheStore is not null)
         {
-            var persisted = await _cacheStore.WriteAsync(
-                CreateCacheRecord(snapshot, _timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
-            Report(persisted.Diagnostic);
+            try
+            {
+                var persisted = await _cacheStore.WriteAsync(
+                    CreateCacheRecord(snapshot, _timeProvider.GetUtcNow()), cancellationToken).ConfigureAwait(false);
+                Report(persisted.Diagnostic);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException or JsonException or NotSupportedException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Report(new(
+                    DashboardCacheDiagnosticKind.WriteFailed,
+                    "Dashboard cache rejected the refreshed data; live data remains available."));
+            }
         }
         return new DashboardRefreshResult(snapshot, reusedSections);
     }
@@ -620,10 +631,11 @@ public sealed class DashboardService
         {
             var fullName = Text(repo, "full_name");
             var description = OptionalText(repo, "description");
+            var language = OptionalText(repo, "language");
             var visibility = OptionalBool(repo, "private") ? "Private" : "Public";
             var archived = OptionalBool(repo, "archived") ? " / Archived" : "";
             return new DashboardItem(
-                fullName, fullName, OptionalText(repo, "language") ?? "Repository",
+                fullName, fullName, string.IsNullOrWhiteSpace(language) ? "Repository" : language,
                 $"{visibility}{archived}" + (string.IsNullOrWhiteSpace(description) ? "" : $" / {description}"),
                 OptionalDate(repo, "pushed_at") ?? Date(repo, "updated_at"),
                 GitHubUrl(Text(repo, "html_url")));

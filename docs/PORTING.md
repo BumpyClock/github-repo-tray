@@ -64,12 +64,14 @@ three sections. Repositories and contributions use a 15-minute automatic window;
 Copilot uses five minutes. Boundaries are exclusive: age equal to the window
 requires a fetch. Manual refresh bypasses every window.
 
-The `DashboardRefreshSession` constructor accepts an optional recovery snapshot
-and its configured interval. That is the hydration seam for a later durable store:
-in-memory recovery and hydrated recovery enter the same Core policy, with no
-second TTL implementation or identity probe. The seed remains private until the
-normal initial and final identity checks succeed. Reuse returns the original
-section object, timestamp, successful-empty state, and failure provenance.
+The durable JSON store and an optional in-memory recovery snapshot feed the same
+Core hydration policy, with no second TTL implementation or identity probe.
+After the initial `/user` operation verifies the cache's host and stable account
+ID, matching retained sections may be published while live section requests and
+the final identity check continue. A failed final check or account/viewer mismatch
+subsequently hides that data rather than allowing it to remain under an obsolete
+account. Reuse returns the original section object, timestamp, successful-empty
+state, and failure provenance.
 
 Core resolves `/user` before requesting account-specific data and verifies the account
 again before publishing the completed snapshot. A detected account change,

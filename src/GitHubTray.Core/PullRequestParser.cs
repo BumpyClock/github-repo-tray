@@ -120,15 +120,9 @@ internal static class PullRequestParser
         }
         var author = pull.GetProperty("author");
         var authorLogin = author.ValueKind == JsonValueKind.Null ? "Deleted user" : Text(author, "login");
-        Uri? avatar = null;
-        if (author.ValueKind != JsonValueKind.Null && OptionalText(author, "avatarUrl") is { } avatarText)
-        {
-            if (!Uri.TryCreate(avatarText, UriKind.Absolute, out avatar) || avatar.Scheme != Uri.UriSchemeHttps ||
-                avatar.Host != "avatars.githubusercontent.com" || !avatar.IsDefaultPort || avatar.UserInfo.Length != 0)
-            {
-                throw new JsonException("Expected a GitHub avatar URL.");
-            }
-        }
+        var avatar = author.ValueKind == JsonValueKind.Null
+            ? null
+            : ParseAvatarUrl(OptionalText(author, "avatarUrl"));
         var labels = pull.GetProperty("labels");
         var labelCount = Count(labels, "totalCount");
         var labelItems = labels.GetProperty("nodes").EnumerateArray().Select(label =>
@@ -163,6 +157,25 @@ internal static class PullRequestParser
             PullRequest = details
         };
     }
+
+    private static Uri? ParseAvatarUrl(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var avatar) || !IsGitHubAvatarUrl(avatar))
+        {
+            throw new JsonException("Expected a GitHub avatar URL.");
+        }
+        return avatar;
+    }
+
+    internal static bool IsGitHubAvatarUrl(Uri avatar) =>
+        avatar.Scheme == Uri.UriSchemeHttps &&
+        avatar.Host == "avatars.githubusercontent.com" &&
+        avatar.IsDefaultPort &&
+        avatar.UserInfo.Length == 0;
 
     private static CommitChecks ParseChecks(JsonElement pull)
     {

@@ -164,13 +164,15 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             DashboardCacheRecord record;
             try
             {
+                if (stream.Length > MaximumFileSize)
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                    return Malformed();
+                }
+
                 await using (stream)
                 {
-                    if (stream.Length > MaximumFileSize)
-                    {
-                        await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                        return Malformed();
-                    }
                     record = await JsonSerializer.DeserializeAsync(
                         stream, DashboardCacheJsonContext.Default.DashboardCacheRecord, cancellationToken)
                         .ConfigureAwait(false) ?? throw new JsonException("Cache must contain an object.");
@@ -535,8 +537,13 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             }
             _ = DashboardService.GitHubUrl(item.Url.AbsoluteUri);
             if (item.PullRequest is { } pull &&
-                (pull.Number <= 0 || pull.Labels.IsDefault || pull.Checks is null ||
-                 pull.Checks.Items.IsDefault))
+                (pull.Number <= 0 || string.IsNullOrWhiteSpace(pull.AuthorLogin) ||
+                 pull.Labels.IsDefault || pull.Labels.Any(label => label is null) ||
+                 pull.Checks is null ||
+                 pull.Checks.Items.IsDefault ||
+                 pull.Checks.Items.Any(check => check is null) ||
+                 pull.AuthorAvatarUrl is { } avatar &&
+                 !PullRequestParser.IsGitHubAvatarUrl(avatar)))
             {
                 throw new JsonException("Invalid cached pull request.");
             }
@@ -571,10 +578,15 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             return;
         }
         if (section.Usage is null || string.IsNullOrWhiteSpace(section.Usage.Plan) ||
+            section.Usage.Plan.Length > 80 || section.Usage.Plan.Any(char.IsControl) ||
             section.Usage.Quotas.IsDefaultOrEmpty ||
             section.Usage.Quotas.Any(quota => quota is null ||
-                quota.PercentRemaining is { } value &&
-                (!double.IsFinite(value) || value is < 0 or > 100)))
+                !Enum.IsDefined(quota.Kind) ||
+                !Enum.IsDefined(quota.Availability) ||
+                (quota.Availability == CopilotQuotaAvailability.Limited
+                    ? quota.PercentRemaining is not { } value ||
+                      !double.IsFinite(value) || value is < 0 or > 100
+                    : quota.PercentRemaining is not null)))
         {
             throw new JsonException("Invalid cached Copilot usage.");
         }

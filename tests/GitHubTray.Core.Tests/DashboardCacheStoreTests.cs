@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using GitHubTray.Core;
 
 namespace GitHubTray.Core.Tests;
@@ -121,6 +122,130 @@ public sealed class DashboardCacheStoreTests : IDisposable
 
         Assert.Null(incompatible.Record);
         Assert.Equal(DashboardCacheDiagnosticKind.Incompatible, incompatible.Diagnostic.Kind);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task OversizedCacheIsDisposedBeforeItIsRemovedAsMalformed()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var path = store.GetFilePath(Octocat);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            stream.SetLength(16 * 1024 * 1024 + 1);
+        }
+
+        var result = await store.ReadAsync(Octocat, Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.Malformed, result.Diagnostic.Kind);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task ModifiedCacheWithUntrustedPullRequestAvatarIsRemovedAsMalformed()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var section = ListSection("pull") with
+        {
+            Items =
+            [
+                ListSection("pull").Items[0] with
+                {
+                    PullRequest = PullRequest(new Uri("https://avatars.githubusercontent.com/u/1?v=4"))
+                }
+            ]
+        };
+        await store.WriteAsync(Record(pullRequests: section));
+        var path = store.GetFilePath(Octocat);
+        var json = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, json.Replace(
+            "avatars.githubusercontent.com", "untrusted.example", StringComparison.Ordinal));
+
+        var result = await store.ReadAsync(Octocat, Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.Malformed, result.Diagnostic.Kind);
+        Assert.False(File.Exists(path));
+    }
+
+    [Theory]
+    [InlineData("author")]
+    [InlineData("label")]
+    [InlineData("check")]
+    public async Task ModifiedCacheWithInvalidNestedPullRequestDataIsRemovedAsMalformed(
+        string invalid)
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var section = ListSection("pull") with
+        {
+            Items =
+            [
+                ListSection("pull").Items[0] with
+                {
+                    PullRequest = PullRequest(new Uri("https://avatars.githubusercontent.com/u/1?v=4"))
+                }
+            ]
+        };
+        await store.WriteAsync(Record(pullRequests: section));
+        var path = store.GetFilePath(Octocat);
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        var pull = root["pullRequests"]!["items"]![0]!["pullRequest"]!;
+        switch (invalid)
+        {
+            case "author":
+                pull["authorLogin"] = null;
+                break;
+            case "label":
+                pull["labels"] = new JsonArray((JsonNode?)null);
+                break;
+            case "check":
+                pull["checks"]!["items"] = new JsonArray((JsonNode?)null);
+                break;
+        }
+        await File.WriteAllTextAsync(path, root.ToJsonString());
+
+        var result = await store.ReadAsync(Octocat, Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.Malformed, result.Diagnostic.Kind);
+        Assert.False(File.Exists(path));
+    }
+
+    [Theory]
+    [InlineData("remaining")]
+    [InlineData("kind")]
+    [InlineData("availability")]
+    public async Task ModifiedCacheWithInvalidCopilotQuotaIsRemovedAsMalformed(string invalid)
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        await store.WriteAsync(Record(copilot: new(
+            DashboardCacheVersions.Copilot,
+            Now.AddHours(-1),
+            new("enterprise",
+                [new(CopilotQuotaKind.PremiumInteractions, CopilotQuotaAvailability.Limited, 50, false, null)]))));
+        var path = store.GetFilePath(Octocat);
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        var quota = root["copilot"]!["usage"]!["quotas"]![0]!;
+        switch (invalid)
+        {
+            case "remaining":
+                quota["percentRemaining"] = null;
+                break;
+            case "kind":
+                quota["kind"] = 999;
+                break;
+            case "availability":
+                quota["availability"] = 999;
+                break;
+        }
+        await File.WriteAllTextAsync(path, root.ToJsonString());
+
+        var result = await store.ReadAsync(Octocat, Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.Malformed, result.Diagnostic.Kind);
         Assert.False(File.Exists(path));
     }
 
@@ -273,7 +398,8 @@ public sealed class DashboardCacheStoreTests : IDisposable
     private static DashboardCacheRecord Record(
         DashboardCacheAccount? account = null,
         DashboardListCacheSection? activity = null,
-        DashboardListCacheSection? pullRequests = null) =>
+        DashboardListCacheSection? pullRequests = null,
+        DashboardCopilotCacheSection? copilot = null) =>
         new(
             DashboardCacheVersions.Schema,
             account ?? Octocat,
@@ -282,7 +408,7 @@ public sealed class DashboardCacheStoreTests : IDisposable
             null,
             null,
             null,
-            null);
+            copilot);
 
     private static DashboardListCacheSection ListSection(
         string id,
@@ -299,6 +425,21 @@ public sealed class DashboardCacheStoreTests : IDisposable
                     Now.AddHours(-2),
                     new Uri("https://github.com/octocat/tray"))
             ]);
+
+    private static PullRequestDetails PullRequest(Uri avatar) =>
+        new(
+            42,
+            "Improve tray",
+            "octocat",
+            avatar,
+            false,
+            "fix/tray",
+            "main",
+            "REVIEW_REQUIRED",
+            2,
+            [],
+            0,
+            new(null, CheckRollupState.NoChecks, [], 0));
 
     public void Dispose()
     {

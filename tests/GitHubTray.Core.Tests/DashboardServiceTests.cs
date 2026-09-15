@@ -166,6 +166,53 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
+    public async Task WhitespaceRepositoryLanguageUsesRepositoryFallback()
+    {
+        var api = new FakeApi
+        {
+            RepositoryResponse =
+                """[{"full_name":"octocat/tray","html_url":"https://github.com/octocat/tray","description":"A native tray app","language":" ","private":true,"archived":false,"pushed_at":null,"updated_at":"2026-09-01T10:30:00Z"}]"""
+        };
+
+        var snapshot = await new DashboardService(api).RefreshAsync();
+
+        Assert.Equal("Repository", Assert.Single(snapshot.Repositories.Items).Repository);
+    }
+
+    [Fact]
+    public async Task CacheValidationFailureDoesNotDiscardLiveSnapshot()
+    {
+        var diagnostics = new List<DashboardCacheDiagnostic>();
+        var cache = new RecordingCacheStore
+        {
+            WriteException = new ArgumentException("Injected cache rejection.")
+        };
+
+        var snapshot = await new DashboardService(
+            new FakeApi(), cache, reportCacheDiagnostic: diagnostics.Add).RefreshAsync();
+
+        Assert.Equal("octocat", snapshot.User.Login);
+        Assert.Single(snapshot.Repositories.Items);
+        Assert.Equal(
+            DashboardCacheDiagnosticKind.WriteFailed,
+            Assert.Single(diagnostics).Kind);
+    }
+
+    [Fact]
+    public async Task CacheValidationFailurePreservesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var cache = new RecordingCacheStore
+        {
+            BeforeWrite = _ => cancellation.Cancel(),
+            WriteException = new ArgumentException("Injected cache rejection.")
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new DashboardService(new FakeApi(), cache).RefreshAsync(null, cancellation.Token));
+    }
+
+    [Fact]
     public async Task AllFreshStartupSnapshotUsesOnlyTheTwoIdentityOperations()
     {
         var clock = new MutableTimeProvider();
@@ -706,6 +753,8 @@ public sealed class DashboardServiceTests
         public int ClearCount { get; private set; }
         public DashboardCacheRecord? ReadRecord { get; init; }
         public DashboardCacheClearResult? ClearResult { get; init; }
+        public Action<CancellationToken>? BeforeWrite { get; init; }
+        public Exception? WriteException { get; init; }
         public List<DashboardCacheRecord> Writes { get; } = [];
 
         public Task<DashboardCacheReadResult> ReadAsync(
@@ -727,6 +776,11 @@ public sealed class DashboardServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            BeforeWrite?.Invoke(cancellationToken);
+            if (WriteException is not null)
+            {
+                throw WriteException;
+            }
             Writes.Add(record);
             return Task.FromResult(new DashboardCacheWriteResult(
                 new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
