@@ -37,6 +37,11 @@ part of the build.
    settings persistence, and restart. Cross-publishing alone does not verify
    those runtime behaviors.
 
+The Copilot quota `ItemsSource` must remain a reference-type, read-only list at
+the WinRT boundary. Binding a boxed `ImmutableArray<T>` can compile and publish
+successfully but fail during initial NativeAOT layout with `0x80070057`.
+Check both the initial empty state and populated quota rows in the native app.
+
 ## Outputs and profiles
 
 ```powershell

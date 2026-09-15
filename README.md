@@ -215,7 +215,7 @@ Build one unsigned bundle containing x64, x86, and ARM64 NativeAOT packages:
 ```
 
 The script uses all three publish profiles and writes
-`GitHubTray_1.0.0.0_x64_x86_arm64.msixbundle` under a new timestamped directory in
+`GitHubTray_<version>_x64_x86_arm64.msixbundle` under a new timestamped directory in
 `artifacts\packages`. The version comes from `Package.appxmanifest`. Use
 `-OutputDirectory <new-directory>` to choose the destination; an existing directory
 is rejected to prevent stale files from entering the bundle.

@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using System.Collections.ObjectModel;
 using GitHubTray.Core;
 
 namespace GitHubTray_App.ViewModels;
@@ -46,7 +46,7 @@ public sealed record CopilotQuotaViewModel(CopilotQuota Quota)
 
 public sealed record CopilotUsageViewModel(
     string Plan,
-    ImmutableArray<CopilotQuotaViewModel> Quotas,
+    ReadOnlyCollection<CopilotQuotaViewModel> Quotas,
     string Status,
     bool HasError)
 {
@@ -56,7 +56,7 @@ public sealed record CopilotUsageViewModel(
     {
         if (!verified)
         {
-            return new("", [], refreshing ? "Loading Copilot usage..."
+            return new("", Array.AsReadOnly<CopilotQuotaViewModel>([]), refreshing ? "Loading Copilot usage..."
                 : "Copilot usage hidden until the GitHub CLI account is verified.", false);
         }
 
@@ -79,13 +79,14 @@ public sealed record CopilotUsageViewModel(
             {
                 Plan = index == 0 ? plan : "",
                 ObservedAt = observedAt
-            }).ToImmutableArray() ?? [];
+            }).ToArray() ?? [];
         var status = section?.Error is { } error
             ? $"{(section.IsStale ? "Stale usage" : "Usage unavailable")}: {error}" +
                 (section.UpdatedAt is { } updated ? $" Last success {updated.ToLocalTime():g}." : "")
             : refreshing ? "Refreshing Copilot usage..."
             : usage is null ? "Copilot usage has not been loaded."
-            : rows.IsEmpty ? "No metered Copilot quota." : "";
-        return new(plan, rows, status, section?.Error is not null);
+            : rows.Length == 0 ? "No metered Copilot quota." : "";
+        // WinRT ItemsSource rejects boxed ImmutableArray values in NativeAOT builds.
+        return new(plan, Array.AsReadOnly(rows), status, section?.Error is not null);
     }
 }

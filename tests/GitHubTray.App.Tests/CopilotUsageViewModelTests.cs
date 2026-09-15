@@ -1,3 +1,4 @@
+using System.Collections;
 using GitHubTray.Core;
 using GitHubTray_App.ViewModels;
 
@@ -12,6 +13,26 @@ public sealed class CopilotUsageViewModelTests
             new(CopilotQuotaKind.Chat, CopilotQuotaAvailability.Unlimited, null, true, null),
             new(CopilotQuotaKind.Completions, CopilotQuotaAvailability.Unlimited, null, true, null)
         ]), DateTimeOffset.UtcNow, error);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void QuotaItemsExposeAReferenceTypeReadOnlyListForNativeBinding(bool verified)
+    {
+        var display = CopilotUsageViewModel.Create(Section(), verified, false);
+        object source = display.Quotas;
+
+        Assert.False(source.GetType().IsValueType);
+        Assert.Same(source, display.Quotas);
+        var items = Assert.IsAssignableFrom<IList>(source);
+        Assert.Equal(verified ? 1 : 0, items.Count);
+        Assert.True(items.IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => items.Clear());
+        if (verified)
+        {
+            Assert.Same(display.Quotas[0], items[0]);
+        }
+    }
 
     [Fact]
     public void CreditUsageHasOneMeterWithoutUnlimitedChatOrCompletionRows()
