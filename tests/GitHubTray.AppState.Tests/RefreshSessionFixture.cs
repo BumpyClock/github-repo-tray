@@ -9,12 +9,36 @@ internal sealed class RefreshSessionFixture : IAsyncDisposable
     internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
     private readonly List<RequestGate> gates = [];
 
-    internal RefreshSessionFixture()
+    internal RefreshSessionFixture(
+        IDashboardCacheStore? cacheStore = null,
+        MutableTimeProvider? clock = null)
+        : this(cacheStore, null, null, clock)
     {
-        Session = new DashboardRefreshSession(new DashboardService(Api));
+    }
+
+    internal RefreshSessionFixture(
+        DashboardSnapshot initialRecoverySnapshot,
+        TimeSpan? refreshInterval = null,
+        MutableTimeProvider? clock = null)
+        : this(null, initialRecoverySnapshot, refreshInterval, clock)
+    {
+    }
+
+    private RefreshSessionFixture(
+        IDashboardCacheStore? cacheStore,
+        DashboardSnapshot? initialRecoverySnapshot,
+        TimeSpan? refreshInterval,
+        MutableTimeProvider? clock)
+    {
+        Clock = clock ?? new MutableTimeProvider();
+        Session = new DashboardRefreshSession(
+            new DashboardService(Api, cacheStore, Clock),
+            initialRecoverySnapshot,
+            refreshInterval);
     }
 
     internal ScriptedGitHubApi Api { get; } = new();
+    internal MutableTimeProvider Clock { get; }
     internal DashboardRefreshSession Session { get; }
 
     internal RequestGate Gate(bool ignoreCancellation = false)
@@ -24,7 +48,8 @@ internal sealed class RefreshSessionFixture : IAsyncDisposable
         return gate;
     }
 
-    internal Task RefreshAsync() => Session.RefreshAsync().WaitAsync(Timeout);
+    internal Task RefreshAsync(DashboardRefreshReason reason = DashboardRefreshReason.Manual) =>
+        Session.RefreshAsync(reason).WaitAsync(Timeout);
 
     public async ValueTask DisposeAsync()
     {
@@ -36,6 +61,15 @@ internal sealed class RefreshSessionFixture : IAsyncDisposable
         await Session.ShutdownAsync().WaitAsync(Timeout);
         await Session.DisposeAsync().AsTask().WaitAsync(Timeout);
     }
+}
+
+internal sealed class MutableTimeProvider : TimeProvider
+{
+    private DateTimeOffset utcNow = new(2026, 9, 14, 20, 0, 0, TimeSpan.Zero);
+
+    public override DateTimeOffset GetUtcNow() => utcNow;
+
+    internal void Advance(TimeSpan duration) => utcNow += duration;
 }
 
 internal sealed class RequestGate(bool ignoreCancellation)
@@ -90,10 +124,12 @@ internal sealed record ApiReply(string Body)
     internal RequestGate? Gate { get; init; }
     internal bool FaultAsTask { get; init; }
     internal Action? BeforeSend { get; init; }
+    internal Action<CancellationToken>? ObserveCancellation { get; init; }
 
     internal Task<string> SendAsync(CancellationToken cancellationToken)
     {
         BeforeSend?.Invoke();
+        ObserveCancellation?.Invoke(cancellationToken);
         if (Gate is not null)
         {
             return SendGatedAsync(cancellationToken);
@@ -147,6 +183,7 @@ internal sealed class RefreshResponses
 
     internal static ApiReply User(string login) => new(JsonSerializer.Serialize(new
     {
+        id = string.Equals(login, "octocat", StringComparison.OrdinalIgnoreCase) ? 1 : 2,
         login,
         name = $"Display {login}",
         html_url = $"https://github.com/{login}"
@@ -206,6 +243,8 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
     private readonly List<ApiRequest> requests = [];
     private readonly HashSet<ApiRoute> usedRoutes = [];
     private RefreshResponses responses = RefreshResponses.Success();
+    private RefreshResponses[] responseSequence = [RefreshResponses.Success()];
+    private int responseIndex;
     private int userCalls;
 
     internal ApiRequest[] Requests
@@ -219,11 +258,18 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
         }
     }
 
-    internal void Use(RefreshResponses next)
+    internal void Use(params RefreshResponses[] next)
     {
+        if (next.Length == 0)
+        {
+            throw new ArgumentException("At least one response round is required.", nameof(next));
+        }
+
         lock (sync)
         {
-            responses = next;
+            responseSequence = next;
+            responseIndex = 0;
+            responses = responseSequence[0];
             userCalls = 0;
             usedRoutes.Clear();
         }
@@ -234,6 +280,10 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
         ApiReply reply;
         lock (sync)
         {
+            if (endpoint == "user" && userCalls == 2)
+            {
+                AdvanceRound();
+            }
             var route = endpoint switch
             {
                 "user" => userCalls++ == 0 ? ApiRoute.InitialUser : ApiRoute.FinalUser,
@@ -245,6 +295,16 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
             reply = Record(route, endpoint);
         }
         return reply.SendAsync(cancellationToken);
+    }
+
+    private void AdvanceRound()
+    {
+        if (responseIndex + 1 < responseSequence.Length)
+        {
+            responses = responseSequence[++responseIndex];
+        }
+        userCalls = 0;
+        usedRoutes.Clear();
     }
 
     public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
@@ -268,6 +328,91 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
             throw new InvalidOperationException($"Unexpected repeat request for {route}; no retry was scripted.");
         }
         return responses.For(route);
+    }
+}
+
+internal sealed class MemoryDashboardCacheStore : IDashboardCacheStore
+{
+    private readonly object sync = new();
+    private readonly Dictionary<(string Host, long UserId), DashboardCacheRecord> records = [];
+
+    internal int ReadCount { get; private set; }
+    internal int WriteCount { get; private set; }
+    internal int ClearCount { get; private set; }
+    internal DashboardCacheRecord? LastWrite { get; private set; }
+    internal RequestGate? ClearGate { get; set; }
+    internal int RecordCount
+    {
+        get
+        {
+            lock (sync)
+            {
+                return records.Count;
+            }
+        }
+    }
+
+    public Task<DashboardCacheReadResult> ReadAsync(
+        DashboardCacheAccount account,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (sync)
+        {
+            ReadCount++;
+            records.TryGetValue((account.Host.ToLowerInvariant(), account.UserId), out var record);
+            return Task.FromResult(new DashboardCacheReadResult(
+                record,
+                new(record is null ? DashboardCacheDiagnosticKind.Missing : DashboardCacheDiagnosticKind.Loaded,
+                    "Fixture cache read.")));
+        }
+    }
+
+    public Task<DashboardCacheWriteResult> WriteAsync(
+        DashboardCacheRecord record,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (sync)
+        {
+            WriteCount++;
+            LastWrite = record;
+            var key = (record.Account.Host.ToLowerInvariant(), record.Account.UserId);
+            if (record.Activity is null && record.PullRequests is null &&
+                record.ReviewRequests is null && record.Repositories is null &&
+                record.Contributions is null && record.Copilot is null)
+            {
+                records.Remove(key);
+            }
+            else
+            {
+                records[key] = record;
+            }
+        }
+        return Task.FromResult(new DashboardCacheWriteResult(
+            new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
+    }
+
+    public async Task<DashboardCacheClearResult> ClearAsync(
+        CancellationToken cancellationToken = default)
+    {
+        ClearCount++;
+        if (ClearGate is not null)
+        {
+            await ClearGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        int deleted;
+        lock (sync)
+        {
+            deleted = records.Count;
+            records.Clear();
+        }
+        return new(
+            deleted,
+            0,
+            new(DashboardCacheDiagnosticKind.Cleared, "Fixture cache cleared."));
     }
 }
 

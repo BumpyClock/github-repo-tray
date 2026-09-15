@@ -18,6 +18,7 @@ public sealed record CopilotUsage(string Plan, ImmutableArray<CopilotQuota> Quot
 
 public sealed record CopilotUsageSection(CopilotUsage? Usage, DateTimeOffset? UpdatedAt, string? Error)
 {
+    public DashboardSectionSource Source { get; init; } = DashboardSectionSource.Live;
     public bool IsStale => Error is not null && Usage is not null && UpdatedAt.HasValue;
 }
 

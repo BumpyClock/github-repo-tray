@@ -102,9 +102,18 @@ public sealed partial class SectionViewModel : ObservableObject
         }
 
         Error = section.Error ?? "";
-        UpdatedLabel = section.UpdatedAt is { } updated
-            ? $"{(section.IsStale ? "Last success" : "Updated")} {updated.ToLocalTime():g} · {Items.Count} items"
-            : "No successful refresh yet";
+        UpdatedLabel = section.UpdatedAt is not { } updated
+            ? section.Source == DashboardSectionSource.Missing
+                ? "Not retained on this device"
+                : "No successful refresh yet"
+            : section.Source switch
+            {
+                DashboardSectionSource.Cached =>
+                    $"Cached from {updated.ToLocalTime():g} · {Items.Count} items",
+                DashboardSectionSource.Retained =>
+                    $"Last success {updated.ToLocalTime():g} · {Items.Count} items",
+                _ => $"Updated {updated.ToLocalTime():g} · {Items.Count} items"
+            };
     }
 }
 
@@ -123,6 +132,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private DashboardSnapshot? _lastProjectedSnapshot;
     private Task? _initializeTask;
     private Task? _saveTask;
+    private Task? _clearCacheTask;
     private Task? _shutdownTask;
     private AppSettings _committedSettings = new();
     private ContributionCellSizePreset _contributionCellSize = ContributionCellSizePreset.Medium;
@@ -221,6 +231,21 @@ public sealed partial class DashboardViewModel : ObservableObject
     public partial string TrayError { get; set; } = "";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCacheClearStatus))]
+    public partial string CacheClearStatus { get; set; } = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCacheClearWarning))]
+    public partial string CacheClearWarning { get; set; } = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanClearCachedData))]
+    [NotifyPropertyChangedFor(nameof(CanRefresh))]
+    [NotifyCanExecuteChangedFor(nameof(ClearCachedDataCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RefreshCommand))]
+    public partial bool IsClearingCachedData { get; private set; }
+
+    [ObservableProperty]
     public partial string RefreshMinutesText { get; set; } = "5";
 
     public ContributionCellSizePreset ContributionCellSize
@@ -288,8 +313,11 @@ public sealed partial class DashboardViewModel : ObservableObject
     public bool HasSettingsStatus => SettingsStatus.Length != 0;
     public bool HasActionError => ActionError.Length != 0;
     public bool HasTrayError => TrayError.Length != 0;
-    public bool CanRefresh => !_isShuttingDown && !IsRefreshing;
+    public bool HasCacheClearStatus => CacheClearStatus.Length != 0;
+    public bool HasCacheClearWarning => CacheClearWarning.Length != 0;
+    public bool CanRefresh => !_isShuttingDown && !IsRefreshing && !IsClearingCachedData;
     public bool CanSaveSettings => !_isShuttingDown && IsSettingsLoaded && !IsSavingSettings;
+    public bool CanClearCachedData => !_isShuttingDown && !IsClearingCachedData;
     public ContributionCalendar? VisibleContributionCalendar => IsAccountVerified ? Contributions.Calendar : null;
     public string ContributionStatus
     {
@@ -309,6 +337,13 @@ public sealed partial class DashboardViewModel : ObservableObject
             if (Contributions.Calendar is null)
             {
                 return IsRefreshing ? "Loading contributions…" : "No contribution calendar was returned.";
+            }
+
+            if (Contributions.Source == DashboardSectionSource.Cached)
+            {
+                return DashboardSnapshotPresentation.CachedContributionStatus(
+                    Contributions,
+                    IsRefreshing);
             }
 
             return IsRefreshing
@@ -347,6 +382,7 @@ public sealed partial class DashboardViewModel : ObservableObject
             var settings = await _settingsStore.LoadAsync(_lifetime.Token);
             settings.Validate();
             _committedSettings = settings;
+            _refreshSession.SetRefreshInterval(TimeSpan.FromMinutes(settings.RefreshMinutes));
             SetProperty(ref _contributionCellSize, settings.ContributionCellSize, nameof(ContributionCellSize));
             RefreshMinutesText = settings.RefreshMinutes.ToString(CultureInfo.InvariantCulture);
             _canAutoSaveSettings = true;
@@ -373,7 +409,9 @@ public sealed partial class DashboardViewModel : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(CanRefresh))]
-    public async Task RefreshAsync()
+    public Task RefreshAsync() => RefreshWithReasonAsync(DashboardRefreshReason.Manual);
+
+    private async Task RefreshWithReasonAsync(DashboardRefreshReason reason)
     {
         if (_isShuttingDown)
         {
@@ -387,7 +425,7 @@ public sealed partial class DashboardViewModel : ObservableObject
 
         try
         {
-            var refreshTask = _refreshSession.RefreshAsync();
+            var refreshTask = _refreshSession.RefreshAsync(reason);
             ApplyRefreshState(_refreshSession.State);
             await refreshTask;
         }
@@ -417,7 +455,9 @@ public sealed partial class DashboardViewModel : ObservableObject
             AccountLabel = string.IsNullOrWhiteSpace(snapshot.User.DisplayName)
                 ? $"@{snapshot.User.Login}"
                 : $"{snapshot.User.DisplayName} · @{snapshot.User.Login}";
-            AccountDescription = $"Last verified github.com account: @{snapshot.User.Login}. Resolved by gh for this process; environment credentials can take precedence over the stored CLI account.";
+            AccountDescription = DashboardSnapshotPresentation.AccountDescription(
+                snapshot,
+                state.IsRefreshing);
             IsAccountVerified = true;
         }
         else
@@ -467,6 +507,48 @@ public sealed partial class DashboardViewModel : ObservableObject
         OnPropertyChanged(nameof(IsEmptyVisible));
         OnPropertyChanged(nameof(EmptyTitle));
         OnPropertyChanged(nameof(EmptyMessage));
+    }
+
+    [RelayCommand(CanExecute = nameof(CanClearCachedData))]
+    public Task ClearCachedDataAsync()
+    {
+        if (!CanClearCachedData)
+        {
+            return _clearCacheTask ?? Task.CompletedTask;
+        }
+
+        if (_clearCacheTask is null || _clearCacheTask.IsCompleted)
+        {
+            _clearCacheTask = ClearCachedDataCoreAsync();
+        }
+        return _clearCacheTask;
+    }
+
+    private async Task ClearCachedDataCoreAsync()
+    {
+        IsClearingCachedData = true;
+        CacheClearStatus = "";
+        CacheClearWarning = "";
+        ActionError = "";
+        try
+        {
+            var result = await _refreshSession.ClearCacheAsync();
+            if (!_isShuttingDown)
+            {
+                var presentation = DashboardCacheClearPresentation.Create(result);
+                CacheClearStatus = presentation.Status;
+                CacheClearWarning = presentation.Warning;
+                ApplyRefreshState(_refreshSession.State);
+                if (_refreshSession.State is { Snapshot: not null, IsRefreshing: false })
+                {
+                    AccountDescription = "The displayed dashboard remains available, but its reusable cached data was invalidated. The next refresh fetches every section.";
+                }
+            }
+        }
+        finally
+        {
+            IsClearingCachedData = false;
+        }
     }
 
     [RelayCommand(CanExecute = nameof(CanSaveSettings))]
@@ -533,6 +615,7 @@ public sealed partial class DashboardViewModel : ObservableObject
                 {
                     if (!_isShuttingDown)
                     {
+                        _refreshSession.SetRefreshInterval(TimeSpan.FromMinutes(settings.RefreshMinutes));
                         _refreshTimer.Stop();
                         UpdateRefreshSchedule();
                         _refreshTimer.Start();
@@ -586,7 +669,8 @@ public sealed partial class DashboardViewModel : ObservableObject
         RefreshScheduleLabel = $"Refresh every {minutes} {(minutes == 1 ? "minute" : "minutes")}";
     }
 
-    private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) => await RefreshAsync();
+    private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) =>
+        await RefreshWithReasonAsync(DashboardRefreshReason.Periodic);
 
     public void SetPanelVisible(bool isVisible) => _presentationClock.SetVisible(isVisible);
 
@@ -619,6 +703,8 @@ public sealed partial class DashboardViewModel : ObservableObject
         _preferenceSaveTimer.Tick -= OnPreferenceSaveTimerTick;
         RefreshCommand.NotifyCanExecuteChanged();
         SaveSettingsCommand.NotifyCanExecuteChanged();
+        ClearCachedDataCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanClearCachedData));
         try
         {
             var refreshShutdownTask = _startup.DisposeAsync().AsTask();
@@ -633,7 +719,8 @@ public sealed partial class DashboardViewModel : ObservableObject
                 await Task.WhenAll(
                     refreshShutdownTask,
                     _lifetime.CancelAsync(),
-                    _initializeTask ?? Task.CompletedTask);
+                    _initializeTask ?? Task.CompletedTask,
+                    _clearCacheTask ?? Task.CompletedTask);
             }
         }
         finally

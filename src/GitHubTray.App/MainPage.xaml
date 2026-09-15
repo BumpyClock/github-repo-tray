@@ -242,7 +242,7 @@
                          AutomationProperties.AutomationId="RefreshIntervalTextBox"
                          AutomationProperties.Name="Refresh interval in minutes"
                          AutomationProperties.HelpText="Enter a whole number from 1 through 60. Default is 5." />
-                <TextBlock Text="1–60 minutes. Default: 5. Refresh continues while the panel is hidden. No activity is saved to disk."
+                <TextBlock Text="1–60 minutes. Default: 5. Refresh continues while the panel is hidden. Eligible dashboard data is cached separately from settings."
                            TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Button Content="Save interval" Command="{x:Bind ViewModel.SaveSettingsCommand, Mode=OneWay}"
                         Style="{StaticResource AccentButtonStyle}"
@@ -272,6 +272,31 @@
                            AutomationProperties.AutomationId="GitHubCliInstructions" />
                 <TextBlock Text="GitHub CLI chooses the account. GH_TOKEN, then GITHUB_TOKEN, can override stored credentials; GH_CONFIG_DIR can change which stored CLI configuration is used. Environment changes may require quitting and reopening GitHub Tray. To change a stored account, use gh auth switch --hostname github.com in a terminal. Every refresh verifies the current account again."
                            TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="Cached dashboard data" Style="{StaticResource BodyStrongTextBlockStyle}"
+                           AutomationProperties.HeadingLevel="Level2" />
+                <TextBlock Text="Clear saved dashboard data for every cached GitHub account on this device. This preserves GitHub CLI authentication and all preferences. The dashboard currently on screen may remain visible, but it will not be reused; the next refresh fetches every section and can save fresh data again."
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           AutomationProperties.AutomationId="ClearCachedDataDescription" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Clear cached data" Click="ClearCachedDataButton_Click"
+                            IsEnabled="{x:Bind ViewModel.CanClearCachedData, Mode=OneWay}"
+                            AutomationProperties.AutomationId="ClearCachedDataButton"
+                            AutomationProperties.Name="Clear cached dashboard data for all accounts"
+                            AutomationProperties.HelpText="Preserves GitHub CLI authentication and settings. The next refresh fetches all dashboard sections." />
+                    <ProgressRing Width="20" Height="20"
+                                  IsActive="{x:Bind ViewModel.IsClearingCachedData, Mode=OneWay}"
+                                  Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsClearingCachedData), Mode=OneWay}"
+                                  AutomationProperties.AutomationId="ClearCachedDataProgress"
+                                  AutomationProperties.Name="Clearing cached dashboard data" />
+                </StackPanel>
+                <InfoBar IsOpen="{x:Bind ViewModel.HasCacheClearStatus, Mode=OneWay}" IsClosable="False"
+                         Severity="Success" Title="Cached data cleared"
+                         Message="{x:Bind ViewModel.CacheClearStatus, Mode=OneWay}"
+                         AutomationProperties.AutomationId="CacheClearSuccessInfoBar" />
+                <InfoBar IsOpen="{x:Bind ViewModel.HasCacheClearWarning, Mode=OneWay}" IsClosable="False"
+                         Severity="Warning" Title="Cached data was not fully cleared"
+                         Message="{x:Bind ViewModel.CacheClearWarning, Mode=OneWay}"
+                         AutomationProperties.AutomationId="CacheClearWarningInfoBar" />
                 <TextBlock Text="Closing or pressing Escape hides this panel. Use the notification-area menu to open, refresh, view settings, or quit. GitHub Tray does not change Windows startup settings."
                            TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </StackPanel>

@@ -166,6 +166,241 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
+    public async Task WhitespaceRepositoryLanguageUsesRepositoryFallback()
+    {
+        var api = new FakeApi
+        {
+            RepositoryResponse =
+                """[{"full_name":"octocat/tray","html_url":"https://github.com/octocat/tray","description":"A native tray app","language":" ","private":true,"archived":false,"pushed_at":null,"updated_at":"2026-09-01T10:30:00Z"}]"""
+        };
+
+        var snapshot = await new DashboardService(api).RefreshAsync();
+
+        Assert.Equal("Repository", Assert.Single(snapshot.Repositories.Items).Repository);
+    }
+
+    [Fact]
+    public async Task CacheValidationFailureDoesNotDiscardLiveSnapshot()
+    {
+        var diagnostics = new List<DashboardCacheDiagnostic>();
+        var cache = new RecordingCacheStore
+        {
+            WriteException = new ArgumentException("Injected cache rejection.")
+        };
+
+        var snapshot = await new DashboardService(
+            new FakeApi(), cache, reportCacheDiagnostic: diagnostics.Add).RefreshAsync();
+
+        Assert.Equal("octocat", snapshot.User.Login);
+        Assert.Single(snapshot.Repositories.Items);
+        Assert.Equal(
+            DashboardCacheDiagnosticKind.WriteFailed,
+            Assert.Single(diagnostics).Kind);
+    }
+
+    [Fact]
+    public async Task CacheValidationFailurePreservesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var cache = new RecordingCacheStore
+        {
+            BeforeWrite = _ => cancellation.Cancel(),
+            WriteException = new ArgumentException("Injected cache rejection.")
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new DashboardService(new FakeApi(), cache).RefreshAsync(null, cancellation.Token));
+    }
+
+    [Fact]
+    public async Task AllFreshStartupSnapshotUsesOnlyTheTwoIdentityOperations()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(4));
+
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Startup, TimeSpan.FromMinutes(5)),
+            previous);
+
+        Assert.Equal(DashboardSectionKind.All, result.ReusedSections);
+        Assert.Equal(["user", "user"], api.Endpoints);
+        Assert.Empty(api.Queries);
+        Assert.Same(previous.Activity, result.Snapshot.Activity);
+        Assert.Same(previous.PullRequests, result.Snapshot.PullRequests);
+        Assert.Same(previous.ReviewRequests, result.Snapshot.ReviewRequests);
+        Assert.Same(previous.Repositories, result.Snapshot.Repositories);
+        Assert.Same(previous.Contributions, result.Snapshot.Contributions);
+        Assert.Same(previous.Copilot, result.Snapshot.Copilot);
+    }
+
+    [Fact]
+    public async Task PeriodicRefreshAlwaysFetchesActivityAndPullRequestsButReusesOtherFreshSections()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Periodic, TimeSpan.FromMinutes(5)),
+            previous);
+
+        Assert.Equal(
+            DashboardSectionKind.Repositories | DashboardSectionKind.Contributions | DashboardSectionKind.Copilot,
+            result.ReusedSections);
+        Assert.Equal(5, api.OperationCount);
+        Assert.Equal(2, api.Endpoints.Count(endpoint => endpoint == "user"));
+        Assert.Contains(api.Endpoints, endpoint => endpoint.StartsWith("users/", StringComparison.Ordinal));
+        Assert.Equal(2, api.Queries.Count(query => query.Contains("query PullRequests", StringComparison.Ordinal)));
+        Assert.DoesNotContain(api.Endpoints, endpoint => endpoint.StartsWith("user/repos?", StringComparison.Ordinal));
+        Assert.DoesNotContain(api.Queries, query => query.Contains("contributionsCollection", StringComparison.Ordinal));
+        Assert.DoesNotContain(CopilotUsageParser.Endpoint, api.Endpoints);
+        Assert.Same(previous.Repositories, result.Snapshot.Repositories);
+        Assert.Same(previous.Contributions, result.Snapshot.Contributions);
+        Assert.Same(previous.Copilot, result.Snapshot.Copilot);
+    }
+
+    [Fact]
+    public async Task ExactFreshnessBoundariesRequireFetches()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(5));
+        var copilotBoundary = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Startup, TimeSpan.FromMinutes(10)),
+            previous);
+        Assert.Equal(DashboardSectionKind.All & ~DashboardSectionKind.Copilot, copilotBoundary.ReusedSections);
+        Assert.Equal(3, api.OperationCount);
+        Assert.Equal([CopilotUsageParser.Endpoint], api.Endpoints.Where(endpoint => endpoint != "user"));
+
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(5));
+        var configuredBoundary = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Startup, TimeSpan.FromMinutes(10)),
+            previous);
+        Assert.Equal(
+            DashboardSectionKind.Repositories | DashboardSectionKind.Contributions,
+            configuredBoundary.ReusedSections);
+        Assert.Equal(6, api.OperationCount);
+
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(5));
+        var fifteenMinuteBoundary = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Startup, TimeSpan.FromMinutes(20)),
+            previous);
+        Assert.Equal(
+            DashboardSectionKind.Activity | DashboardSectionKind.PullRequests | DashboardSectionKind.ReviewRequests,
+            fifteenMinuteBoundary.ReusedSections);
+        Assert.Equal(5, api.OperationCount);
+        Assert.Contains(api.Endpoints, endpoint => endpoint.StartsWith("user/repos?", StringComparison.Ordinal));
+        Assert.Contains(api.Queries, query => query.Contains("contributionsCollection", StringComparison.Ordinal));
+        Assert.Contains(CopilotUsageParser.Endpoint, api.Endpoints);
+    }
+
+    [Fact]
+    public async Task ManualRefreshBypassesFreshnessForEverySection()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+        api.ClearRequests();
+
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
+            previous);
+
+        Assert.Equal(DashboardSectionKind.None, result.ReusedSections);
+        Assert.Equal(8, api.OperationCount);
+        Assert.Equal(2, api.Endpoints.Count(endpoint => endpoint == "user"));
+        Assert.Equal(3, api.Queries.Count);
+    }
+
+    [Fact]
+    public async Task ReusedFailedSectionPreservesItsOriginalSuccessTimestampAndFailure()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var original = await service.RefreshAsync();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        api.FailRepositories = true;
+        var failed = await service.RefreshAsync(original);
+        Assert.Equal(original.Repositories.UpdatedAt, failed.Repositories.UpdatedAt);
+        Assert.Equal("Offline", failed.Repositories.Error);
+
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Periodic, TimeSpan.FromMinutes(5)),
+            failed);
+
+        Assert.True(result.ReusedSections.HasFlag(DashboardSectionKind.Repositories));
+        Assert.Same(failed.Repositories, result.Snapshot.Repositories);
+        Assert.Equal(original.Repositories.UpdatedAt, result.Snapshot.Repositories.UpdatedAt);
+        Assert.Equal("Offline", result.Snapshot.Repositories.Error);
+        Assert.Equal(5, api.OperationCount);
+        Assert.DoesNotContain(api.Endpoints, endpoint => endpoint.StartsWith("user/repos?", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SuccessfulEmptySectionRemainsAReusableSuccess()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+        api.RepositoryResponse = "[]";
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var empty = await service.RefreshAsync(previous);
+        Assert.Empty(empty.Repositories.Items);
+        Assert.NotNull(empty.Repositories.UpdatedAt);
+        Assert.Null(empty.Repositories.Error);
+
+        api.ClearRequests();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Periodic, TimeSpan.FromMinutes(5)),
+            empty);
+
+        Assert.True(result.ReusedSections.HasFlag(DashboardSectionKind.Repositories));
+        Assert.Empty(result.Snapshot.Repositories.Items);
+        Assert.Equal(empty.Repositories.UpdatedAt, result.Snapshot.Repositories.UpdatedAt);
+        Assert.DoesNotContain(api.Endpoints, endpoint => endpoint.StartsWith("user/repos?", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FreshSnapshotFromAnotherAccountIsNeverReused()
+    {
+        var clock = new MutableTimeProvider();
+        var api = new FakeApi();
+        var service = new DashboardService(api, timeProvider: clock);
+        var previous = await service.RefreshAsync();
+        api.ClearRequests();
+        api.Login = "different-user";
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        var result = await service.RefreshAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Startup, TimeSpan.FromMinutes(5)),
+            previous);
+
+        Assert.Equal(DashboardSectionKind.None, result.ReusedSections);
+        Assert.Equal(8, api.OperationCount);
+        Assert.Equal("different-user", result.Snapshot.User.Login);
+        Assert.NotSame(previous.Activity, result.Snapshot.Activity);
+    }
+
+    [Fact]
     public async Task UnknownEventTypesStillHaveSafeRepositoryLinksAndTimestamps()
     {
         var api = new FakeApi
@@ -255,6 +490,160 @@ public sealed class DashboardServiceTests
             new DashboardService(new FakeApi()).RefreshAsync(cancellationToken: cancellation.Token));
     }
 
+    [Fact]
+    public async Task SuccessfulRefreshPersistsEverySuccessfulSectionWithItsOriginalTimestamp()
+    {
+        var now = new DateTimeOffset(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        var clock = new ManualTimeProvider(now);
+        var cache = new RecordingCacheStore();
+        var api = new FakeApi();
+
+        var snapshot = await new DashboardService(api, cache, clock).RefreshAsync();
+
+        var record = Assert.Single(cache.Writes);
+        Assert.Equal(new DashboardCacheAccount("github.com", 1, "octocat"), record.Account);
+        Assert.Equal(snapshot.Activity.UpdatedAt, record.Activity!.SucceededAt);
+        Assert.Equal(snapshot.PullRequests.UpdatedAt, record.PullRequests!.SucceededAt);
+        Assert.Equal(snapshot.ReviewRequests.UpdatedAt, record.ReviewRequests!.SucceededAt);
+        Assert.Equal(snapshot.Repositories.UpdatedAt, record.Repositories!.SucceededAt);
+        Assert.Equal(snapshot.Contributions.UpdatedAt, record.Contributions!.SucceededAt);
+        Assert.Equal(snapshot.Copilot.UpdatedAt, record.Copilot!.SucceededAt);
+        Assert.All(new[]
+        {
+            record.Activity.SucceededAt,
+            record.PullRequests.SucceededAt,
+            record.ReviewRequests.SucceededAt,
+            record.Repositories.SucceededAt,
+            record.Contributions.SucceededAt,
+            record.Copilot.SucceededAt
+        }, timestamp => Assert.Equal(now, timestamp));
+    }
+
+    [Fact]
+    public async Task PartialFailureKeepsEligibleCachedSuccessWithoutRenewingItsTimestamp()
+    {
+        var clock = new ManualTimeProvider(new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero));
+        var cache = new RecordingCacheStore();
+        var api = new FakeApi();
+        var service = new DashboardService(api, cache, clock);
+        var previous = await service.RefreshAsync();
+        var activityTimestamp = previous.Activity.UpdatedAt;
+        clock.Advance(TimeSpan.FromHours(1));
+        api.FailActivity = true;
+
+        var refreshed = await service.RefreshAsync(previous);
+
+        Assert.Equal(DashboardSectionSource.Retained, refreshed.Activity.Source);
+        Assert.Equal(activityTimestamp, refreshed.Activity.UpdatedAt);
+        var record = cache.Writes[^1];
+        Assert.Equal(activityTimestamp, record.Activity!.SucceededAt);
+        Assert.Equal(clock.GetUtcNow(), record.PullRequests!.SucceededAt);
+    }
+
+    [Fact]
+    public async Task SuccessfulEmptySectionReplacesPersistedNonemptyDataAndAdvancesOnlyItsSuccess()
+    {
+        var clock = new ManualTimeProvider(new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero));
+        var cache = new RecordingCacheStore();
+        var api = new FakeApi();
+        var service = new DashboardService(api, cache, clock);
+        var previous = await service.RefreshAsync();
+        clock.Advance(TimeSpan.FromMinutes(30));
+        api.ActivityResponse = "[]";
+
+        var refreshed = await service.RefreshAsync(previous);
+
+        Assert.Empty(refreshed.Activity.Items);
+        var persisted = cache.Writes[^1].Activity!;
+        Assert.Empty(persisted.Items);
+        Assert.Equal(clock.GetUtcNow(), persisted.SucceededAt);
+    }
+
+    [Fact]
+    public async Task InMemorySuccessAtExactRetentionBoundaryIsNotReusedOrPersisted()
+    {
+        var clock = new ManualTimeProvider(new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero));
+        var cache = new RecordingCacheStore();
+        var api = new FakeApi();
+        var service = new DashboardService(api, cache, clock);
+        var previous = await service.RefreshAsync();
+        clock.Advance(TimeSpan.FromDays(7));
+        api.FailActivity = true;
+
+        var refreshed = await service.RefreshAsync(previous);
+
+        Assert.Empty(refreshed.Activity.Items);
+        Assert.Null(refreshed.Activity.UpdatedAt);
+        Assert.Equal(DashboardSectionSource.Failed, refreshed.Activity.Source);
+        Assert.Null(cache.Writes[^1].Activity);
+    }
+
+    [Fact]
+    public async Task InitialIdentityFailureDoesNotReadOrWriteAccountCache()
+    {
+        var api = new FakeApi { FailUser = true };
+        var cache = new RecordingCacheStore();
+        var service = new DashboardService(api, cache);
+
+        await Assert.ThrowsAsync<GitHubException>(() =>
+            service.RefreshWithHydrationAsync(null, _ => Assert.Fail("Cache must not publish.")));
+
+        Assert.Equal(0, cache.ReadCount);
+        Assert.Empty(cache.Writes);
+        Assert.Equal(["user"], api.Endpoints);
+    }
+
+    [Fact]
+    public async Task MismatchedCacheRecordCannotPublishIntoVerifiedAccount()
+    {
+        var cache = new RecordingCacheStore
+        {
+            ReadRecord = new DashboardCacheRecord(
+                DashboardCacheVersions.Schema,
+                new("github.com", 2, "other"),
+                new(DashboardCacheVersions.Activity, DateTimeOffset.UtcNow, []),
+                null, null, null, null, null)
+        };
+        DashboardSnapshot? hydrated = null;
+        var api = new FakeApi();
+
+        var snapshot = await new DashboardService(api, cache)
+            .RefreshWithHydrationAsync(null, value => hydrated = value);
+
+        Assert.Null(hydrated);
+        Assert.Equal("octocat", snapshot.User.Login);
+        Assert.Equal(1, cache.ReadCount);
+        Assert.Equal(1, Assert.Single(cache.Writes).Account.UserId);
+    }
+
+    [Fact]
+    public async Task ClearCacheDelegatesWithoutRunningGitHubRequests()
+    {
+        var api = new FakeApi();
+        var cache = new RecordingCacheStore
+        {
+            ClearResult = new(
+                2,
+                1,
+                new(DashboardCacheDiagnosticKind.ClearFailed, "Fixture partial clear."))
+        };
+
+        var result = await new DashboardService(api, cache).ClearCacheAsync();
+
+        Assert.Same(cache.ClearResult, result);
+        Assert.Equal(1, cache.ClearCount);
+        Assert.Empty(api.Endpoints);
+        Assert.Empty(api.Queries);
+    }
+
+    [Fact]
+    public async Task ClearCacheWithoutStorageIsASafeSuccessfulNoOp()
+    {
+        var result = await new DashboardService(new FakeApi()).ClearCacheAsync();
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, result.DeletedFileCount);
+    }
+
     [Theory]
     [InlineData("https://evil.example/user")]
     [InlineData("--hostname=evil.example")]
@@ -273,12 +662,22 @@ public sealed class DashboardServiceTests
         public string? UserResponse { get; set; }
         public bool FailUser { get; set; }
         public bool FailActivity { get; set; }
+        public bool FailRepositories { get; set; }
         public bool IncompleteSearch { get; set; }
         public Action? AfterQuery { get; set; }
         public Action? AfterCopilot { get; set; }
         public string PullUrl { get; set; } = "https://github.com/octocat/tray/pull/42";
+        public string RepositoryResponse { get; set; } =
+            """[{"full_name":"octocat/tray","html_url":"https://github.com/octocat/tray","description":"A native tray app","language":"C#","private":true,"archived":false,"pushed_at":null,"updated_at":"2026-09-01T10:30:00Z"}]""";
         public string ActivityResponse { get; set; } =
             """[{"id":"1","type":"PushEvent","repo":{"name":"octocat/tray"},"payload":{"ref":"refs/heads/main"},"created_at":"2026-09-01T09:30:00Z"}]""";
+        public int OperationCount => Endpoints.Count + Queries.Count;
+
+        public void ClearRequests()
+        {
+            Endpoints.Clear();
+            Queries.Clear();
+        }
 
         public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
         {
@@ -317,6 +716,7 @@ public sealed class DashboardServiceTests
                 }
                 return Task.FromResult(UserResponse ?? JsonSerializer.Serialize(new
                 {
+                    id = string.Equals(Login, "octocat", StringComparison.OrdinalIgnoreCase) ? 1 : 2,
                     login = Login, name = "The Octocat", html_url = $"https://github.com/{Login}"
                 }));
             }
@@ -330,9 +730,79 @@ public sealed class DashboardServiceTests
             }
             if (endpoint.StartsWith("user/repos?", StringComparison.Ordinal))
             {
-                return Task.FromResult("""[{"full_name":"octocat/tray","html_url":"https://github.com/octocat/tray","description":"A native tray app","language":"C#","private":true,"archived":false,"pushed_at":null,"updated_at":"2026-09-01T10:30:00Z"}]""");
+                if (FailRepositories)
+                {
+                    throw new GitHubException("Offline");
+                }
+                return Task.FromResult(RepositoryResponse);
             }
             throw new InvalidOperationException($"Unexpected endpoint: {endpoint}");
         }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
+    }
+
+    private sealed class RecordingCacheStore : IDashboardCacheStore
+    {
+        public int ReadCount { get; private set; }
+        public int ClearCount { get; private set; }
+        public DashboardCacheRecord? ReadRecord { get; init; }
+        public DashboardCacheClearResult? ClearResult { get; init; }
+        public Action<CancellationToken>? BeforeWrite { get; init; }
+        public Exception? WriteException { get; init; }
+        public List<DashboardCacheRecord> Writes { get; } = [];
+
+        public Task<DashboardCacheReadResult> ReadAsync(
+            DashboardCacheAccount account,
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ReadCount++;
+            return Task.FromResult(new DashboardCacheReadResult(
+                ReadRecord,
+                new(ReadRecord is null
+                    ? DashboardCacheDiagnosticKind.Missing
+                    : DashboardCacheDiagnosticKind.Loaded, "Fixture cache read.")));
+        }
+
+        public Task<DashboardCacheWriteResult> WriteAsync(
+            DashboardCacheRecord record,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BeforeWrite?.Invoke(cancellationToken);
+            if (WriteException is not null)
+            {
+                throw WriteException;
+            }
+            Writes.Add(record);
+            return Task.FromResult(new DashboardCacheWriteResult(
+                new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
+        }
+
+        public Task<DashboardCacheClearResult> ClearAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ClearCount++;
+            return Task.FromResult(ClearResult ?? new DashboardCacheClearResult(
+                0,
+                0,
+                new(DashboardCacheDiagnosticKind.Cleared, "Fixture cache cleared.")));
+        }
+    }
+
+    private sealed class MutableTimeProvider : TimeProvider
+    {
+        private DateTimeOffset utcNow = new(2026, 9, 14, 20, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => utcNow;
+        public void Advance(TimeSpan duration) => utcNow += duration;
     }
 }

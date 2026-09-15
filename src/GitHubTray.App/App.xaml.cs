@@ -5,6 +5,7 @@ using GitHubTray_App.ViewModels;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
+using Windows.Storage;
 
 namespace GitHubTray_App;
 
@@ -26,7 +27,21 @@ public partial class App : Application
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _instance = AppInstance.FindOrRegisterForKey("GitHubTray.Primary");
         var startup = DashboardStartup.StartIfPrimary(_instance.IsCurrent,
-            static () => new DashboardRefreshSession(new DashboardService(new GitHubCliApi())));
+            static () =>
+            {
+                var settingsFile = Path.Combine(
+                    ApplicationData.Current.LocalFolder.Path, "settings.json");
+                var cacheDirectory = Path.Combine(
+                    ApplicationData.Current.LocalFolder.Path, "dashboard-cache");
+                var service = new DashboardService(
+                    new GitHubCliApi(),
+                    new JsonDashboardCacheStore(cacheDirectory),
+                    reportCacheDiagnostic: diagnostic =>
+                        Debug.WriteLine($"GitHub Tray cache: {diagnostic.Kind}: {diagnostic.Message}"));
+                return new DashboardRefreshSession(
+                    service,
+                    startupRefreshInterval: LoadStartupRefreshIntervalAsync(settingsFile));
+            });
         if (startup is null)
         {
             // No tray window, timer, or API client is created in secondary instances.
@@ -42,6 +57,21 @@ public partial class App : Application
         _window.ShowPanel();
         Debug.WriteLine("GitHub Tray: loading account data.");
         await _window.ViewModel.InitializeAsync();
+    }
+
+    private static async Task<TimeSpan> LoadStartupRefreshIntervalAsync(string settingsFile)
+    {
+        try
+        {
+            var settings = await new SettingsStore(settingsFile).LoadAsync().ConfigureAwait(false);
+            return TimeSpan.FromMinutes(settings.RefreshMinutes);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                         System.Text.Json.JsonException or ArgumentException or
+                                         System.Security.SecurityException)
+        {
+            return TimeSpan.FromMinutes(5);
+        }
     }
 
     private void Instance_Activated(object? sender, AppActivationArguments args)

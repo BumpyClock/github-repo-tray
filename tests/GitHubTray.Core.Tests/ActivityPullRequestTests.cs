@@ -142,7 +142,7 @@ public sealed class ActivityPullRequestTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(endpoint == "user"
-                ? """{"login":"octocat","html_url":"https://github.com/octocat"}"""
+                ? """{"id":1,"login":"octocat","html_url":"https://github.com/octocat"}"""
                 : endpoint.StartsWith("users/", StringComparison.Ordinal) ? Events.ToJsonString() : "[]");
         }
 

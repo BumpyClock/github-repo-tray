@@ -1,6 +1,7 @@
 using GitHubTray.AppState;
 using GitHubTray.Core;
 using GitHubTray_App.ViewModels;
+using System.Collections.Immutable;
 
 namespace GitHubTray.App.Tests;
 
@@ -29,7 +30,9 @@ public sealed class DashboardStartupTests
         await using var startup = Start(api);
         Assert.True(api.InitialUserEntered.Task.IsCompleted);
         Assert.Equal(1, api.RequestCount);
-        Assert.Same(startup.RefreshTask, startup.Session.RefreshAsync());
+        Assert.Same(
+            startup.RefreshTask,
+            startup.Session.RefreshAsync(DashboardRefreshReason.Startup));
 
         var setupEntered = Signal();
         using var releaseSetup = new ManualResetEventSlim();
@@ -99,6 +102,105 @@ public sealed class DashboardStartupTests
     }
 
     [Fact]
+    public async Task VerifiedCacheIsProjectedBeforeDelayedLiveSectionsWithoutAnotherIdentityRequest()
+    {
+        var cachedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        var cache = new StartupCacheStore(new DashboardCacheRecord(
+            DashboardCacheVersions.Schema,
+            new("github.com", 1, "octocat"),
+            new(
+                DashboardCacheVersions.Activity,
+                cachedAt,
+                [
+                    new DashboardItem(
+                        "cached",
+                        "Cached activity",
+                        "octocat/tray",
+                        "Retained",
+                        cachedAt,
+                        new Uri("https://github.com/octocat/tray"))
+                ]),
+            null, null, null, null, null));
+        var api = new StartupApi { AreSectionsBlocked = true };
+        await using var startup = Start(api, cache);
+        var window = new object();
+        Assert.Same(window, await startup.CreateWindowAsync(_ => window));
+        var cached = new TaskCompletionSource<DashboardSessionState>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var initialization = startup.InitializeAsync(
+            () => Task.CompletedTask,
+            state =>
+            {
+                if (state.Snapshot?.Activity.Source == DashboardSectionSource.Cached)
+                    cached.TrySetResult(state);
+            });
+
+        await api.SectionEntered.Task.WaitAsync(Timeout);
+        var state = await cached.Task.WaitAsync(Timeout);
+
+        Assert.True(state.IsRefreshing);
+        Assert.True(state.IsAccountVerified);
+        Assert.Equal("cached", Assert.Single(state.Snapshot!.Activity.Items).Id);
+        Assert.Equal(cachedAt, state.Snapshot.Activity.UpdatedAt);
+        Assert.Equal(1, api.UserRequestCount);
+        Assert.False(startup.RefreshTask.IsCompleted);
+
+        api.ReleaseSections.TrySetResult();
+        await initialization.WaitAsync(Timeout);
+        Assert.Equal(2, api.UserRequestCount);
+        Assert.Equal(8, api.RequestCount);
+    }
+
+    [Fact]
+    public async Task PersistedIntervalControlsStartupFreshnessAfterCachePublication()
+    {
+        var clock = new StartupTimeProvider();
+        var cachedAt = clock.GetUtcNow().AddMinutes(-3);
+        var cache = new StartupCacheStore(new DashboardCacheRecord(
+            DashboardCacheVersions.Schema,
+            new("github.com", 1, "octocat"),
+            new(
+                DashboardCacheVersions.Activity,
+                cachedAt,
+                [
+                    new DashboardItem(
+                        "cached",
+                        "Cached activity",
+                        "octocat/tray",
+                        "Retained",
+                        cachedAt,
+                        new Uri("https://github.com/octocat/tray"))
+                ]),
+            null, null, null, null, null));
+        var interval = new TaskCompletionSource<TimeSpan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new StartupApi { AreSectionsBlocked = true };
+        await using var startup = DashboardStartup.StartIfPrimary(true,
+            () => new DashboardRefreshSession(
+                new DashboardService(api, cache, clock),
+                startupRefreshInterval: interval.Task))!;
+
+        var window = new object();
+        Assert.Same(window, await startup.CreateWindowAsync(_ => window));
+        await startup.Session.InitialHydrationTask.WaitAsync(Timeout);
+
+        Assert.Equal(1, api.RequestCount);
+        Assert.False(api.SectionEntered.Task.IsCompleted);
+        var hydrated = Assert.IsType<DashboardSnapshot>(startup.Session.State.Snapshot);
+        Assert.Equal("cached", Assert.Single(hydrated.Activity.Items).Id);
+        Assert.True(startup.Session.State.IsRefreshing);
+
+        interval.TrySetResult(TimeSpan.FromMinutes(2));
+        await api.SectionEntered.Task.WaitAsync(Timeout);
+        api.ReleaseSections.TrySetResult();
+        await startup.RefreshTask.WaitAsync(Timeout);
+
+        Assert.Equal(8, api.RequestCount);
+        Assert.Empty(startup.Session.State.Snapshot!.Activity.Items);
+        Assert.Equal(DashboardSectionSource.Live, startup.Session.State.Snapshot.Activity.Source);
+    }
+
+    [Fact]
     public async Task WindowConstructionReturnsImmediatelyWhileInitialRefreshIsPending()
     {
         var api = new StartupApi { IsInitialUserBlocked = true };
@@ -147,6 +249,51 @@ public sealed class DashboardStartupTests
         // This optimization must not turn the session into a permanent refresh cache.
         await startup.Session.RefreshAsync().WaitAsync(Timeout);
         Assert.Equal(16, api.RequestCount);
+    }
+
+    [Fact]
+    public async Task StartupReasonReusesAnInjectedAllFreshSnapshotWithoutASecondStartupFlight()
+    {
+        var clock = new StartupTimeProvider();
+        var now = clock.GetUtcNow();
+        var empty = new DashboardSection([], now, null);
+        var seed = new DashboardSnapshot(
+            new GitHubUser("github.com", 1, "octocat", "Octocat", new Uri("https://github.com/octocat")),
+            empty,
+            empty,
+            empty,
+            empty)
+        {
+            Contributions = new ContributionSection(new ContributionCalendar(0, []), now, null),
+            Copilot = new CopilotUsageSection(
+                new CopilotUsage("individual", ImmutableArray.Create(
+                    new CopilotQuota(
+                        CopilotQuotaKind.PremiumInteractions,
+                        CopilotQuotaAvailability.Limited,
+                        100,
+                        false,
+                        now.AddDays(1)))),
+                now,
+                null)
+        };
+        var api = new StartupApi();
+        await using var startup = DashboardStartup.StartIfPrimary(true,
+            () => new DashboardRefreshSession(
+                new DashboardService(api, timeProvider: clock),
+                seed,
+                TimeSpan.FromMinutes(5)))!;
+
+        await startup.RefreshTask.WaitAsync(Timeout);
+        var originalTask = startup.RefreshTask;
+        var states = new List<DashboardSessionState>();
+        await startup.InitializeAsync(() => Task.CompletedTask, states.Add).WaitAsync(Timeout);
+
+        Assert.Equal(2, api.RequestCount);
+        Assert.Same(originalTask, startup.RefreshTask);
+        var snapshot = Assert.IsType<DashboardSnapshot>(Assert.Single(states).Snapshot);
+        Assert.Equal(seed.Activity.UpdatedAt, snapshot.Activity.UpdatedAt);
+        Assert.Equal(seed.Contributions.UpdatedAt, snapshot.Contributions.UpdatedAt);
+        Assert.Equal(seed.Copilot.UpdatedAt, snapshot.Copilot.UpdatedAt);
     }
 
     [Fact]
@@ -254,11 +401,19 @@ public sealed class DashboardStartupTests
         Assert.Equal(8, api.RequestCount);
     }
 
-    private static DashboardStartup Start(StartupApi api) =>
+    private static DashboardStartup Start(
+        StartupApi api,
+        IDashboardCacheStore? cacheStore = null) =>
         DashboardStartup.StartIfPrimary(true,
-            () => new DashboardRefreshSession(new DashboardService(api)))!;
+            () => new DashboardRefreshSession(new DashboardService(api, cacheStore)))!;
 
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private sealed class StartupTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() =>
+            new(2026, 9, 14, 20, 0, 0, TimeSpan.Zero);
+    }
 
     private sealed class StartupApi : IGitHubApi
     {
@@ -269,11 +424,15 @@ public sealed class DashboardStartupTests
         public bool IsFinalUserBlocked { get; init; }
         public bool IsCancellationIgnored { get; init; }
         public bool HasIdentityFailure { get; init; }
+        public bool AreSectionsBlocked { get; init; }
         public int RequestCount => Volatile.Read(ref _requestCount);
+        public int UserRequestCount => Volatile.Read(ref _userRequestCount);
         public TaskCompletionSource InitialUserEntered { get; } = Signal();
         public TaskCompletionSource FinalUserEntered { get; } = Signal();
+        public TaskCompletionSource SectionEntered { get; } = Signal();
         public TaskCompletionSource ReleaseInitialUser { get; } = Signal();
         public TaskCompletionSource ReleaseFinalUser { get; } = Signal();
+        public TaskCompletionSource ReleaseSections { get; } = Signal();
         public TaskCompletionSource CancellationObserved { get; } = Signal();
 
         public async Task<string> GetAsync(string endpoint, CancellationToken cancellationToken = default)
@@ -300,18 +459,64 @@ public sealed class DashboardStartupTests
                 }
                 if (HasIdentityFailure)
                     throw new GitHubException("Fixture identity unavailable");
-                return """{"login":"octocat","name":"Octocat","html_url":"https://github.com/octocat"}""";
+                return """{"id":1,"login":"octocat","name":"Octocat","html_url":"https://github.com/octocat"}""";
             }
 
             // Empty REST lists and unavailable optional sections still produce an eligible
             // snapshot after BOTH identity gates. This fixture never contacts GitHub.
+            await WaitForSectionAsync(cancellationToken);
             return "[]";
         }
 
-        public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
+        public async Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _requestCount);
-            return Task.FromResult("{}");
+            await WaitForSectionAsync(cancellationToken);
+            return "{}";
+        }
+
+        private async Task WaitForSectionAsync(CancellationToken cancellationToken)
+        {
+            if (!AreSectionsBlocked)
+            {
+                return;
+            }
+            SectionEntered.TrySetResult();
+            await ReleaseSections.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class StartupCacheStore(DashboardCacheRecord record) : IDashboardCacheStore
+    {
+        public Task<DashboardCacheReadResult> ReadAsync(
+            DashboardCacheAccount account,
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.Equal(record.Account.UserId, account.UserId);
+            return Task.FromResult(new DashboardCacheReadResult(
+                record,
+                new(DashboardCacheDiagnosticKind.Loaded, "Fixture cache read.")));
+        }
+
+        public Task<DashboardCacheWriteResult> WriteAsync(
+            DashboardCacheRecord replacement,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheWriteResult(
+                new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
+        }
+
+        public Task<DashboardCacheClearResult> ClearAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheClearResult(
+                1,
+                0,
+                new(DashboardCacheDiagnosticKind.Cleared, "Fixture cache cleared.")));
         }
     }
 }
