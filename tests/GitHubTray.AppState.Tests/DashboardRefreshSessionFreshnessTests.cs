@@ -267,7 +267,9 @@ public sealed class DashboardRefreshSessionFreshnessTests
 
         await fixture.RefreshAsync(DashboardRefreshReason.Startup);
 
-        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
         Assert.Contains("account changed during refresh", fixture.Session.State.Error);
         Assert.Equal(
             [ApiRoute.InitialUser, ApiRoute.FinalUser],

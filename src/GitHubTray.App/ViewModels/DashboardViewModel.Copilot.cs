@@ -6,5 +6,5 @@ public sealed partial class DashboardViewModel
 {
     [ObservableProperty]
     public partial CopilotUsageViewModel CopilotDisplay { get; private set; } =
-        CopilotUsageViewModel.Create(null, verified: false, refreshing: true);
+        CopilotUsageViewModel.Create(null, displayable: false, refreshing: true);
 }

@@ -23,6 +23,8 @@ public sealed partial class ContributionHeatmap
     private int _shimmerFirstVisibleWeek;
     private bool _panelVisible = true;
     private bool _plotInvalidated = true;
+    private bool _motionSettingsSubscribed;
+    private bool _released;
 
     public bool IsLoading
     {
@@ -72,6 +74,7 @@ public sealed partial class ContributionHeatmap
 
     public void SetPanelVisible(bool visible)
     {
+        if (_released) return;
         _panelVisible = visible;
         if (!visible)
         {
@@ -83,34 +86,74 @@ public sealed partial class ContributionHeatmap
         }
     }
 
+    internal void ReleaseForHide()
+    {
+        if (_released) return;
+        _released = true;
+        _panelVisible = false;
+        DetachMotionSettings();
+        CloseSelectionTooltip();
+        if (_keyboardTooltip is not null)
+        {
+            _keyboardTooltip.XamlRoot = null;
+            _keyboardTooltip = null;
+        }
+        ReleasePlotVisuals();
+        Calendar = null;
+        Bindings.StopTracking();
+        Loaded -= Heatmap_Loaded;
+        Unloaded -= Heatmap_Unloaded;
+        LostFocus -= Heatmap_LostFocus;
+        PlotOverlay.SizeChanged -= PlotOverlay_SizeChanged;
+        PlotScroll.SizeChanged -= PlotScroll_SizeChanged;
+        PlotScroll.ViewChanged -= PlotScroll_ViewChanged;
+        CalendarGrid.Tapped -= CalendarGrid_Tapped;
+        PlotOverlay.Clip = null;
+        DataContext = null;
+    }
+
     private void Heatmap_Loaded(object sender, RoutedEventArgs args)
     {
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+        if (_released) return;
+        if (!_motionSettingsSubscribed)
         {
-            _uiSettings.AnimationsEnabledChanged += MotionSettingsChanged;
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            {
+                _uiSettings.AnimationsEnabledChanged += MotionSettingsChanged;
+            }
+            _uiSettings.ColorValuesChanged += MotionSettingsChanged;
+            _motionSettingsSubscribed = true;
         }
-        _uiSettings.ColorValuesChanged += MotionSettingsChanged;
         EnsurePlotCurrent();
     }
 
     private void Heatmap_Unloaded(object sender, RoutedEventArgs args)
     {
         CloseSelectionTooltip();
+        DetachMotionSettings();
+        StopShimmer();
+        _appliedViewport = null;
+    }
+
+    private void DetachMotionSettings()
+    {
+        if (!_motionSettingsSubscribed) return;
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
         {
             _uiSettings.AnimationsEnabledChanged -= MotionSettingsChanged;
         }
         _uiSettings.ColorValuesChanged -= MotionSettingsChanged;
-        StopShimmer();
-        _appliedViewport = null;
+        _motionSettingsSubscribed = false;
     }
 
-    private void MotionSettingsChanged(UISettings sender, object args) =>
-        DispatcherQueue.TryEnqueue(UpdateShimmer);
+    private void MotionSettingsChanged(UISettings sender, object args)
+    {
+        if (!_released) DispatcherQueue.TryEnqueue(UpdateShimmer);
+    }
 
     // DashboardViewModel publishes the latest hidden snapshot immediately before this
     // control is made visible. Setters mark the plot dirty until that reveal callback.
-    private bool CanRealizePlot => IsLoaded && _panelVisible && IsActive;
+    private bool CanRealizePlot => !_released && IsLoaded && _panelVisible && IsActive;
 
     private bool TryRebuildPlot()
     {
@@ -221,7 +264,7 @@ public sealed partial class ContributionHeatmap
 
     private void UpdateShimmer()
     {
-        if (!IsLoaded || !_panelVisible || !IsActive || !IsLoading || ViewModel.HasDays
+        if (_released || !IsLoaded || !_panelVisible || !IsActive || !IsLoading || ViewModel.HasDays
             || _skeletonCells.Count == 0 || !_uiSettings.AnimationsEnabled || _accessibilitySettings.HighContrast)
         {
             StopShimmer();
@@ -263,6 +306,7 @@ public sealed partial class ContributionHeatmap
             return;
         }
         _shimmer.Stop();
+        _shimmer.Children.Clear();
         _shimmer = null;
         foreach (var cell in _skeletonCells)
         {

@@ -53,7 +53,7 @@ public sealed class DashboardRefreshSessionFailureTests
     [InlineData("section", true)]
     [InlineData("final", false)]
     [InlineData("final", true)]
-    public async Task UnexpectedFaultsPropagateClearPublishedDataAndLeaveFutureRefreshUsable(string phase, bool faultAsTask)
+    public async Task UnexpectedFaultsPropagateRetainPublishedDataAndLeaveFutureRefreshUsable(string phase, bool faultAsTask)
     {
         await using var fixture = new RefreshSessionFixture();
         await fixture.RefreshAsync();
@@ -66,7 +66,10 @@ public sealed class DashboardRefreshSessionFailureTests
         var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.RefreshAsync());
 
         Assert.Same(failure, observed);
-        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal(
+            "first",
+            Assert.Single(Assert.IsType<DashboardSnapshot>(
+                fixture.Session.State.Snapshot).Activity.Items).Id);
         Assert.False(fixture.Session.State.IsAccountVerified);
         Assert.False(fixture.Session.State.IsRefreshing);
         Assert.False(fixture.Session.State.IsStopping);

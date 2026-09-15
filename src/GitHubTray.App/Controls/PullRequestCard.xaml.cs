@@ -19,6 +19,7 @@ public sealed partial class PullRequestCard : UserControl
 
     private readonly PullRequestChecksFlyoutState _checksFlyoutState = new();
     private BitmapImage? _avatarImage;
+    private bool _released;
 
     public static readonly DependencyProperty DataProperty = DependencyProperty.Register(
         nameof(Data), typeof(PullRequestCardViewModel), typeof(PullRequestCard), new PropertyMetadata(null, OnDataChanged));
@@ -55,6 +56,24 @@ public sealed partial class PullRequestCard : UserControl
     }
 
     public event EventHandler<PullRequestActionEventArgs>? OpenChecksRequested;
+
+    internal void ReleaseForHide()
+    {
+        if (_released) return;
+        _released = true;
+        ResetChecksFlyout();
+        ClearAvatar();
+        Data = null;
+        Bindings.StopTracking();
+        OpenChecksRequested = null;
+        Loaded -= PullRequestCard_Loaded;
+        Unloaded -= PullRequestCard_Unloaded;
+        ChecksFlyout.Opening -= ChecksFlyout_Opening;
+        ChecksFlyout.Closed -= ChecksFlyout_Closed;
+        ChecksFlyout.Content = null;
+        ChecksButton.Flyout = null;
+        DataContext = null;
+    }
 
     public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public static Visibility Hidden(bool value) => value ? Visibility.Collapsed : Visibility.Visible;
@@ -93,6 +112,7 @@ public sealed partial class PullRequestCard : UserControl
     private static void OnDataChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var card = (PullRequestCard)sender;
+        if (card._released) return;
         // A recycled row must never leave a flyout acting on the old PR.
         card.ResetChecksFlyout();
         card.UpdateStateAppearance();
@@ -101,6 +121,7 @@ public sealed partial class PullRequestCard : UserControl
 
     private void PullRequestCard_Loaded(object sender, RoutedEventArgs args)
     {
+        if (_released) return;
         UpdateStateAppearance();
         UpdateAvatar();
     }
@@ -114,7 +135,7 @@ public sealed partial class PullRequestCard : UserControl
     private void UpdateAvatar()
     {
         ClearAvatar();
-        if (!IsLoaded || Data?.AuthorAvatarUrl is not { } uri)
+        if (_released || !IsLoaded || Data?.AuthorAvatarUrl is not { } uri)
         {
             return;
         }
@@ -165,6 +186,7 @@ public sealed partial class PullRequestCard : UserControl
 
     private void ChecksFlyout_Opening(object? sender, object args)
     {
+        if (_released) return;
         _checksFlyoutState.Open(Data);
         IsChecksFlyoutContentLoaded = true;
         if (ChecksGroups is not null)
@@ -173,8 +195,10 @@ public sealed partial class PullRequestCard : UserControl
         }
     }
 
-    private void ChecksFlyoutContent_Loaded(object sender, RoutedEventArgs args) =>
-        ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+    private void ChecksFlyoutContent_Loaded(object sender, RoutedEventArgs args)
+    {
+        if (!_released) ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+    }
 
     private void ChecksFlyout_Closed(object? sender, object args) => _checksFlyoutState.Close();
 
@@ -191,7 +215,7 @@ public sealed partial class PullRequestCard : UserControl
 
     private void OpenChecks_Click(object sender, RoutedEventArgs args)
     {
-        if (_checksFlyoutState.GetOpenData(Data) is { } data)
+        if (!_released && _checksFlyoutState.GetOpenData(Data) is { } data)
         {
             ChecksFlyout.Hide();
             OpenChecksRequested?.Invoke(this, new PullRequestActionEventArgs(data.Id));

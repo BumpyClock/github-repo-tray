@@ -129,7 +129,7 @@ public sealed class DashboardStartupTests
             },
             state =>
             {
-                if (state.IsAccountVerified)
+                if (state.Snapshot is not null && !state.IsRefreshing)
                     published.TrySetResult(state);
             });
         try
@@ -152,7 +152,7 @@ public sealed class DashboardStartupTests
     }
 
     [Fact]
-    public async Task VerifiedCacheIsProjectedBeforeDelayedLiveSectionsWithoutAnotherIdentityRequest()
+    public async Task SavedCacheIsProjectedBeforeBlockedInitialIdentityAndDelayedLiveSections()
     {
         var cachedAt = DateTimeOffset.UtcNow.AddHours(-1);
         var cache = new StartupCacheStore(new DashboardCacheRecord(
@@ -171,7 +171,7 @@ public sealed class DashboardStartupTests
                         new Uri("https://github.com/octocat/tray"))
                 ]),
             null, null, null, null, null));
-        var api = new StartupApi { AreSectionsBlocked = true };
+        var api = new StartupApi { IsInitialUserBlocked = true, AreSectionsBlocked = true };
         await using var startup = Start(api, cache);
         var window = new object();
         Assert.Same(window, await startup.CreateWindowAsync(_ => window));
@@ -185,16 +185,18 @@ public sealed class DashboardStartupTests
                     cached.TrySetResult(state);
             });
 
-        await api.SectionEntered.Task.WaitAsync(Timeout);
         var state = await cached.Task.WaitAsync(Timeout);
 
         Assert.True(state.IsRefreshing);
-        Assert.True(state.IsAccountVerified);
+        Assert.False(state.IsAccountVerified);
+        Assert.True(state.HasDisplayableData);
         Assert.Equal("cached", Assert.Single(state.Snapshot!.Activity.Items).Id);
         Assert.Equal(cachedAt, state.Snapshot.Activity.UpdatedAt);
         Assert.Equal(1, api.UserRequestCount);
         Assert.False(startup.RefreshTask.IsCompleted);
 
+        api.ReleaseInitialUser.TrySetResult();
+        await api.SectionEntered.Task.WaitAsync(Timeout);
         api.ReleaseSections.TrySetResult();
         await initialization.WaitAsync(Timeout);
         Assert.Equal(2, api.UserRequestCount);
@@ -545,6 +547,16 @@ public sealed class DashboardStartupTests
 
     private sealed class StartupCacheStore(DashboardCacheRecord record) : IDashboardCacheStore
     {
+        public Task<DashboardCacheReadResult> ReadLastUsedAsync(
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheReadResult(
+                record,
+                new(DashboardCacheDiagnosticKind.Loaded, "Fixture last-used cache read.")));
+        }
+
         public Task<DashboardCacheReadResult> ReadAsync(
             DashboardCacheAccount account,
             DateTimeOffset now,
@@ -555,6 +567,15 @@ public sealed class DashboardStartupTests
             return Task.FromResult(new DashboardCacheReadResult(
                 record,
                 new(DashboardCacheDiagnosticKind.Loaded, "Fixture cache read.")));
+        }
+
+        public Task<DashboardCacheWriteResult> SelectAccountAsync(
+            DashboardCacheAccount account,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheWriteResult(
+                new(DashboardCacheDiagnosticKind.Written, "Fixture account selected.")));
         }
 
         public Task<DashboardCacheWriteResult> WriteAsync(

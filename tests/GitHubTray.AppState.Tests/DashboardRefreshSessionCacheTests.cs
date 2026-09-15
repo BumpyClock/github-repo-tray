@@ -89,7 +89,7 @@ public sealed class DashboardRefreshSessionCacheTests
     }
 
     [Fact]
-    public async Task InitialIdentityFailureNeverReadsOrPublishesExistingCache()
+    public async Task InitialIdentityFailureKeepsExistingCachePublishedAndUnverified()
     {
         var cache = new MemoryDashboardCacheStore();
         await SeedAsync(cache);
@@ -104,8 +104,14 @@ public sealed class DashboardRefreshSessionCacheTests
 
         await fixture.RefreshAsync();
 
-        SessionAssertions.Unverified(fixture.Session.State, null);
-        Assert.Equal(readsBeforeFailure, cache.ReadCount);
+        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        var snapshot = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
+        Assert.Equal("seed", Assert.Single(snapshot.Activity.Items).Id);
+        Assert.All(SessionAssertions.Sections(snapshot),
+            section => Assert.Equal(DashboardSectionSource.Cached, section.Source));
+        Assert.Equal(DashboardSectionSource.Cached, snapshot.Contributions.Source);
+        Assert.Equal(DashboardSectionSource.Cached, snapshot.Copilot.Source);
+        Assert.Equal(readsBeforeFailure + 1, cache.ReadCount);
         Assert.Equal(ApiRoute.InitialUser, Assert.Single(fixture.Api.Requests).Route);
     }
 
@@ -115,33 +121,72 @@ public sealed class DashboardRefreshSessionCacheTests
         var cache = new MemoryDashboardCacheStore();
         await SeedAsync(cache);
         await using var fixture = new RefreshSessionFixture(cache);
-        var finalGate = fixture.Gate();
+        var activityGate = fixture.Gate();
         var responses = RefreshResponses.Success("different-account", "live-other");
-        responses.FinalUser = responses.FinalUser with { Gate = finalGate };
+        responses.Activity = responses.Activity with { Gate = activityGate };
         fixture.Api.Use(responses);
 
         var refresh = fixture.Session.RefreshAsync();
         await fixture.Session.InitialHydrationTask.WaitAsync(RefreshSessionFixture.Timeout);
-        await finalGate.EnteredAsync();
+        await fixture.Session.InitialVerificationTask.WaitAsync(RefreshSessionFixture.Timeout);
+        await activityGate.EnteredAsync();
 
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.True(fixture.Session.State.IsAccountVerified);
         Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
 
-        finalGate.Release();
+        activityGate.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
         SessionAssertions.Success(fixture.Session.State, "different-account", "live-other");
 
-        await using var original = new RefreshSessionFixture(cache);
-        var originalResponses = RefreshResponses.Success(revision: "must-fail");
-        originalResponses.FailSections();
-        original.Api.Use(originalResponses);
-        await original.RefreshAsync();
-        var retained = Assert.IsType<DashboardSnapshot>(original.Session.State.Snapshot);
-        Assert.Equal("seed", Assert.Single(retained.Activity.Items).Id);
+        var original = await cache.ReadAsync(
+            new("github.com", 1, "octocat"),
+            fixture.Clock.GetUtcNow());
+        Assert.Equal("seed", Assert.Single(original.Record!.Activity!.Items).Id);
     }
 
     [Fact]
-    public async Task FailedFinalIdentityHidesHydratedCacheAndDoesNotPersistNewSections()
+    public async Task ConfirmedAccountUsesItsOwnFreshCacheAfterDifferentLastUsedHydration()
+    {
+        var cache = new MemoryDashboardCacheStore();
+        var other = await SeedAsync(cache, "different-account", "other-cache");
+        _ = await SeedAsync(cache, "octocat", "last-used-cache");
+        var readsBeforeStartup = cache.ReadCount;
+        await using var fixture = new RefreshSessionFixture(cache);
+        var responses = RefreshResponses.Success("different-account", "must-not-load");
+        var finalIdentity = fixture.Gate();
+        responses.FinalUser = responses.FinalUser with { Gate = finalIdentity };
+        fixture.Api.Use(responses);
+
+        var refresh = fixture.Session.RefreshAsync(DashboardRefreshReason.Startup);
+        await finalIdentity.EnteredAsync();
+
+        Assert.Equal(
+            [ApiRoute.InitialUser, ApiRoute.FinalUser],
+            fixture.Api.Requests.Select(request => request.Route));
+        Assert.Equal(readsBeforeStartup + 2, cache.ReadCount);
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        var hydrated = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", hydrated.User.Login);
+        Assert.Equal("other-cache", Assert.Single(hydrated.Activity.Items).Id);
+        Assert.All(SessionAssertions.Sections(hydrated),
+            section => Assert.Equal(DashboardSectionSource.Cached, section.Source));
+
+        finalIdentity.Release();
+        await refresh.WaitAsync(RefreshSessionFixture.Timeout);
+
+        var snapshot = SessionAssertions.Success(
+            fixture.Session.State, "different-account", "other-cache");
+        Assert.Equal(other.Activity.UpdatedAt, snapshot.Activity.UpdatedAt);
+        Assert.Equal(other.PullRequests.UpdatedAt, snapshot.PullRequests.UpdatedAt);
+        Assert.Equal(other.ReviewRequests.UpdatedAt, snapshot.ReviewRequests.UpdatedAt);
+        Assert.Equal(other.Repositories.UpdatedAt, snapshot.Repositories.UpdatedAt);
+        Assert.Equal(other.Contributions.UpdatedAt, snapshot.Contributions.UpdatedAt);
+        Assert.Equal(other.Copilot.UpdatedAt, snapshot.Copilot.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task ConfirmedFinalAccountChangeClearsHydratedCacheAndDoesNotPersistNewSections()
     {
         var cache = new MemoryDashboardCacheStore();
         await SeedAsync(cache);
@@ -162,16 +207,21 @@ public sealed class DashboardRefreshSessionCacheTests
         finalGate.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
 
-        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
         Assert.Equal(writesBeforeFailure, cache.WriteCount);
         Assert.Equal(8, fixture.Api.Requests.Length);
     }
 
-    private static async Task<DashboardSnapshot> SeedAsync(MemoryDashboardCacheStore cache)
+    private static async Task<DashboardSnapshot> SeedAsync(
+        MemoryDashboardCacheStore cache,
+        string login = "octocat",
+        string revision = "seed")
     {
         await using var seed = new RefreshSessionFixture(cache);
-        seed.Api.Use(RefreshResponses.Success(revision: "seed"));
+        seed.Api.Use(RefreshResponses.Success(login, revision));
         await seed.RefreshAsync();
-        return SessionAssertions.Success(seed.Session.State, revision: "seed");
+        return SessionAssertions.Success(seed.Session.State, login, revision);
     }
 }

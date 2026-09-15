@@ -164,6 +164,52 @@ public sealed class DashboardRefreshSessionClearTests
         Assert.Equal(0, delayed.WriteCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IdentityFailureAfterClearCannotRestoreInvalidatedRecovery(bool deletionFails)
+    {
+        var cache = new MemoryDashboardCacheStore();
+        await using var fixture = new RefreshSessionFixture(cache);
+        await fixture.RefreshAsync();
+        var rendered = fixture.Session.State.Snapshot;
+        cache.FailClear = deletionFails;
+        var cleared = await fixture.Session.ClearCacheAsync();
+        Assert.Equal(!deletionFails, cleared.Succeeded);
+        var readsAfterClear = cache.ReadCount;
+        var writesAfterClear = cache.WriteCount;
+
+        var unverified = RefreshResponses.Success(revision: "must-not-publish");
+        unverified.FinalUser = unverified.FinalUser with
+        {
+            Failure = new GitHubException("Final identity unavailable")
+        };
+        fixture.Api.Use(unverified);
+        await fixture.RefreshAsync(DashboardRefreshReason.Periodic);
+
+        Assert.Same(rendered, fixture.Session.State.Snapshot);
+        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.Equal(readsAfterClear, cache.ReadCount);
+        Assert.Equal(writesAfterClear, cache.WriteCount);
+
+        var failedSections = RefreshResponses.Success(revision: "failed");
+        failedSections.FailSections();
+        fixture.Api.Use(failedSections);
+        var before = fixture.Api.Requests.Length;
+        await fixture.RefreshAsync(DashboardRefreshReason.Periodic);
+
+        Assert.Equal(8, fixture.Api.Requests.Length - before);
+        Assert.Equal(readsAfterClear, cache.ReadCount);
+        Assert.Equal(0, cache.RecordCount);
+        Assert.All(SessionAssertions.Sections(fixture.Session.State.Snapshot!), section =>
+        {
+            Assert.Empty(section.Items);
+            Assert.Null(section.UpdatedAt);
+        });
+        Assert.Null(fixture.Session.State.Snapshot!.Contributions.Calendar);
+        Assert.Null(fixture.Session.State.Snapshot.Copilot.Usage);
+    }
+
     [Fact]
     public async Task RepeatedClearRequestsCoalesceAndShutdownSafelyInterruptsTheOperation()
     {
@@ -231,8 +277,7 @@ public sealed class DashboardRefreshSessionClearTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int WriteCount { get; private set; }
 
-        public async Task<DashboardCacheReadResult> ReadAsync(
-            DashboardCacheAccount account,
+        public async Task<DashboardCacheReadResult> ReadLastUsedAsync(
             DateTimeOffset now,
             CancellationToken cancellationToken = default)
         {
@@ -244,6 +289,20 @@ public sealed class DashboardRefreshSessionClearTests
                 new(DashboardCacheDiagnosticKind.Loaded, "Delayed fixture cache read."));
         }
 
+        public Task<DashboardCacheReadResult> ReadAsync(
+            DashboardCacheAccount account,
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheReadResult(
+                _record,
+                new(_record is null
+                    ? DashboardCacheDiagnosticKind.Missing
+                    : DashboardCacheDiagnosticKind.Loaded,
+                    "Fixture cache read.")));
+        }
+
         public Task<DashboardCacheWriteResult> WriteAsync(
             DashboardCacheRecord replacement,
             CancellationToken cancellationToken = default)
@@ -253,6 +312,15 @@ public sealed class DashboardRefreshSessionClearTests
             _record = replacement;
             return Task.FromResult(new DashboardCacheWriteResult(
                 new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
+        }
+
+        public Task<DashboardCacheWriteResult> SelectAccountAsync(
+            DashboardCacheAccount account,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheWriteResult(
+                new(DashboardCacheDiagnosticKind.Written, "Fixture account selected.")));
         }
 
         public Task<DashboardCacheClearResult> ClearAsync(

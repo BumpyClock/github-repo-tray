@@ -40,8 +40,9 @@ public sealed class DashboardRefreshSessionLifecycleTests
         identity.Release();
         await finalIdentity.EnteredAsync();
         Assert.True(session.State.IsRefreshing);
-        Assert.False(session.State.IsAccountVerified);
+        Assert.True(session.State.IsAccountVerified);
         Assert.Null(session.State.Snapshot);
+        Assert.Equal("octocat", session.State.Account!.Login);
         Assert.Equal(8, fixture.Api.Requests.Length);
         Assert.Equal(ApiRoute.FinalUser, fixture.Api.Requests[^1].Route);
         finalIdentity.Release();
@@ -276,14 +277,14 @@ public sealed class DashboardRefreshSessionLifecycleTests
         await gate.EnteredAsync();
 
         var disposal = fixture.Session.DisposeAsync().AsTask();
-        AssertStoppedState(fixture.Session.State, null);
+        AssertStoppedState(fixture.Session.State, "octocat");
         await gate.CanceledAsync();
         Assert.False(disposal.IsCompleted);
         gate.Release();
         await disposal.WaitAsync(RefreshSessionFixture.Timeout);
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
         Assert.True(refresh.IsCompletedSuccessfully);
-        AssertStoppedState(fixture.Session.State, null);
+        AssertStoppedState(fixture.Session.State, "octocat");
         Assert.True(fixture.Session.RefreshAsync().IsCompletedSuccessfully);
         Assert.Equal(8, fixture.Api.Requests.Length);
     }

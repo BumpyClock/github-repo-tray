@@ -17,17 +17,17 @@ public sealed class CopilotUsageViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void QuotaItemsExposeAReferenceTypeReadOnlyListForNativeBinding(bool verified)
+    public void QuotaItemsExposeAReferenceTypeReadOnlyListForNativeBinding(bool displayable)
     {
-        var display = CopilotUsageViewModel.Create(Section(), verified, false);
+        var display = CopilotUsageViewModel.Create(Section(), displayable, false);
         object source = display.GetQuotaItems();
 
         Assert.False(source.GetType().IsValueType);
         var items = Assert.IsAssignableFrom<IList>(source);
-        Assert.Equal(verified ? 1 : 0, items.Count);
+        Assert.Equal(displayable ? 1 : 0, items.Count);
         Assert.True(items.IsReadOnly);
         Assert.Throws<NotSupportedException>(() => items.Clear());
-        if (verified)
+        if (displayable)
         {
             Assert.Same(display.Quotas[0], items[0]);
         }
@@ -52,12 +52,29 @@ public sealed class CopilotUsageViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void UnverifiedAccountNeverProjectsRetainedUsage(bool refreshing)
+    public void MissingDashboardDoesNotProjectRetainedUsage(bool refreshing)
     {
         var display = CopilotUsageViewModel.Create(Section(), false, refreshing);
         Assert.Empty(display.Quotas);
         Assert.Empty(display.Plan);
         Assert.True(display.HasStatus);
+    }
+
+    [Fact]
+    public void SavedUsageRemainsReadableWithAnUnverifiedTrustLabel()
+    {
+        var cached = Section() with { Source = DashboardSectionSource.Cached };
+
+        var display = CopilotUsageViewModel.Create(
+            cached,
+            displayable: true,
+            refreshing: false,
+            accountVerified: false);
+
+        Assert.Single(display.Quotas);
+        Assert.Equal("Enterprise", display.Plan);
+        Assert.Contains("Cached from", display.Status);
+        Assert.Contains("Account unverified", display.Status);
     }
 
     [Fact]

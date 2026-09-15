@@ -56,6 +56,10 @@ public sealed class DashboardSnapshotPresentationTests
         var refreshingAccount = DashboardSnapshotPresentation.AccountDescription(
             snapshot,
             isRefreshing: true);
+        var unverifiedAccount = DashboardSnapshotPresentation.AccountDescription(
+            snapshot,
+            isRefreshing: true,
+            isVerified: false);
         var completedContributions = DashboardSnapshotPresentation.CachedContributionStatus(
             contributions,
             isRefreshing: false);
@@ -64,18 +68,21 @@ public sealed class DashboardSnapshotPresentationTests
             isRefreshing: true);
         var completedCopilot = CopilotUsageViewModel.Create(
             copilot,
-            verified: true,
+            displayable: true,
             refreshing: false,
             cachedAt);
         var refreshingCopilot = CopilotUsageViewModel.Create(
             copilot,
-            verified: true,
+            displayable: true,
             refreshing: true,
             cachedAt);
 
         Assert.Contains("retained data from this device", completedAccount);
         Assert.DoesNotContain("live requests continue", completedAccount);
         Assert.Contains("live requests continue", refreshingAccount);
+        Assert.Contains("Saved github.com account: @octocat", unverifiedAccount);
+        Assert.Contains("original timestamps", unverifiedAccount);
+        Assert.Contains("verification continues", unverifiedAccount);
         Assert.StartsWith("Cached from ", completedContributions);
         Assert.DoesNotContain("refreshing", completedContributions, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("refreshing contributions", refreshingContributions);

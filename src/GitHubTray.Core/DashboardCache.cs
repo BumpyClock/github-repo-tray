@@ -8,6 +8,7 @@ namespace GitHubTray.Core;
 public static class DashboardCacheVersions
 {
     public const int Schema = 1;
+    public const int Selector = 1;
     public const int Activity = 1;
     public const int PullRequests = 1;
     public const int ReviewRequests = 1;
@@ -48,6 +49,7 @@ public enum DashboardCacheDiagnosticKind
     Missing,
     Loaded,
     Written,
+    Migrated,
     Pruned,
     Malformed,
     Incompatible,
@@ -81,9 +83,17 @@ public sealed record DashboardCacheClearResult(
 
 public interface IDashboardCacheStore
 {
+    Task<DashboardCacheReadResult> ReadLastUsedAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default);
+
     Task<DashboardCacheReadResult> ReadAsync(
         DashboardCacheAccount account,
         DateTimeOffset now,
+        CancellationToken cancellationToken = default);
+
+    Task<DashboardCacheWriteResult> SelectAccountAsync(
+        DashboardCacheAccount account,
         CancellationToken cancellationToken = default);
 
     Task<DashboardCacheWriteResult> WriteAsync(
@@ -99,21 +109,23 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
     public static readonly TimeSpan Retention = TimeSpan.FromDays(7);
     internal const int InactiveRecordCleanupLimit = 8;
     private const long MaximumFileSize = 16 * 1024 * 1024;
+    private const string SelectorFileName = "last-account.json";
     private readonly string _rootDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _inactivePruneSelectionGate = new();
     private readonly Action<string, string>? _beforeReplace;
     private readonly Action<string>? _beforeDelete;
+    private readonly Action? _beforeLastUsedRecordRead;
     private long _generation;
     private int _inactivePruneCursor;
 
     public JsonDashboardCacheStore(string rootDirectory)
-        : this(rootDirectory, null, null)
+        : this(rootDirectory, null, null, null)
     {
     }
 
     internal JsonDashboardCacheStore(string rootDirectory, Action<string, string>? beforeReplace)
-        : this(rootDirectory, beforeReplace, null)
+        : this(rootDirectory, beforeReplace, null, null)
     {
     }
 
@@ -121,20 +133,121 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         string rootDirectory,
         Action<string, string>? beforeReplace,
         Action<string>? beforeDelete)
+        : this(rootDirectory, beforeReplace, beforeDelete, null)
+    {
+    }
+
+    internal JsonDashboardCacheStore(
+        string rootDirectory,
+        Action<string, string>? beforeReplace,
+        Action<string>? beforeDelete,
+        Action? beforeLastUsedRecordRead)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         _rootDirectory = Path.GetFullPath(rootDirectory);
         _beforeReplace = beforeReplace;
         _beforeDelete = beforeDelete;
+        _beforeLastUsedRecordRead = beforeLastUsedRecordRead;
     }
 
-    public async Task<DashboardCacheReadResult> ReadAsync(
-        DashboardCacheAccount account,
+    public async Task<DashboardCacheReadResult> ReadLastUsedAsync(
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        ValidateAccount(account);
         var operationGeneration = Volatile.Read(ref _generation);
+        DashboardCacheAccount? account;
+        DashboardCacheReadResult? legacy = null;
+        DashboardCacheWriteResult? migration = null;
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (operationGeneration != _generation)
+            {
+                return InvalidatedRead();
+            }
+
+            await DeleteInterruptedSelectorWritesAsync().ConfigureAwait(false);
+            var selector = await ReadSelectorAsync(cancellationToken).ConfigureAwait(false);
+            if (selector.Diagnostic is { } selectorDiagnostic)
+            {
+                return new(null, selectorDiagnostic);
+            }
+            if (selector.Account is { } selected)
+            {
+                account = selected;
+            }
+            else
+            {
+                legacy = await FindLegacyLastUsedAccountAsync(now, cancellationToken)
+                    .ConfigureAwait(false);
+                account = legacy.Record?.Account;
+                if (account is not null)
+                {
+                    migration = await ReplaceSelectorAsync(account, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return ReadFailed();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        if (account is null)
+        {
+            return legacy ?? new(null, new(DashboardCacheDiagnosticKind.Missing,
+                "No last-used dashboard account could be restored from this device."));
+        }
+
+        if (legacy is not null)
+        {
+            if (operationGeneration != Volatile.Read(ref _generation))
+            {
+                return InvalidatedRead();
+            }
+            if (migration is { Succeeded: false })
+            {
+                return legacy with
+                {
+                    Diagnostic = migration.Diagnostic with
+                    {
+                        Message = "Reusable legacy dashboard cache was loaded, but its last-used account selector could not be saved."
+                    }
+                };
+            }
+            return legacy with
+            {
+                Diagnostic = new(DashboardCacheDiagnosticKind.Migrated,
+                    "Reusable dashboard cache was loaded and a legacy account record was selected for future startups.")
+            };
+        }
+
+        _beforeLastUsedRecordRead?.Invoke();
+        return await ReadAsync(account, now, operationGeneration, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public Task<DashboardCacheReadResult> ReadAsync(
+        DashboardCacheAccount account,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default) =>
+        ReadAsync(account, now, Volatile.Read(ref _generation), cancellationToken);
+
+    private async Task<DashboardCacheReadResult> ReadAsync(
+        DashboardCacheAccount account,
+        DateTimeOffset now,
+        long operationGeneration,
+        CancellationToken cancellationToken)
+    {
+        ValidateAccount(account);
         var filePath = GetFilePath(account);
         var inactiveCandidates = GetInactivePruneCandidates(filePath, cancellationToken);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -147,122 +260,8 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
             await PruneInactiveRecordsAsync(inactiveCandidates, now, cancellationToken)
                 .ConfigureAwait(false);
-            await DeleteInterruptedWritesAsync(filePath).ConfigureAwait(false);
-            FileStream stream;
-            try
-            {
-                stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                    81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            }
-            catch (FileNotFoundException)
-            {
-                return Missing();
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return Missing();
-            }
-            catch (Exception exception) when (IsIoFailure(exception))
-            {
-                return ReadFailed();
-            }
-
-            DashboardCacheRecord record;
-            try
-            {
-                if (stream.Length > MaximumFileSize)
-                {
-                    await stream.DisposeAsync().ConfigureAwait(false);
-                    await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                    return Malformed();
-                }
-
-                await using (stream)
-                {
-                    record = await JsonSerializer.DeserializeAsync(
-                        stream, DashboardCacheJsonContext.Default.DashboardCacheRecord, cancellationToken)
-                        .ConfigureAwait(false) ?? throw new JsonException("Cache must contain an object.");
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception) when (exception is JsonException or NotSupportedException)
-            {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                return Malformed();
-            }
-            catch (Exception exception) when (IsIoFailure(exception))
-            {
-                return ReadFailed();
-            }
-
-            if (record.SchemaVersion != DashboardCacheVersions.Schema ||
-                !AccountsMatch(account, record.Account))
-            {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                return new(null, new(DashboardCacheDiagnosticKind.Incompatible,
-                    "Dashboard cache used an incompatible schema or account partition and was ignored."));
-            }
-
-            var pruned = false;
-            var activity = Retain(record.Activity, DashboardCacheVersions.Activity, now, ref pruned);
-            var pulls = Retain(record.PullRequests, DashboardCacheVersions.PullRequests, now, ref pruned);
-            var reviews = Retain(record.ReviewRequests, DashboardCacheVersions.ReviewRequests, now, ref pruned);
-            var repositories = Retain(record.Repositories, DashboardCacheVersions.Repositories, now, ref pruned);
-            var contributions = Retain(record.Contributions, DashboardCacheVersions.Contributions, now, ref pruned);
-            var copilot = Retain(record.Copilot, DashboardCacheVersions.Copilot, now, ref pruned);
-
-            try
-            {
-                ValidateList(activity);
-                ValidateList(pulls);
-                ValidateList(reviews);
-                ValidateList(repositories);
-                ValidateContributions(contributions);
-                ValidateCopilot(copilot);
-            }
-            catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
-            {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                return Malformed();
-            }
-
-            var retained = record with
-            {
-                Account = account,
-                Activity = activity,
-                PullRequests = pulls,
-                ReviewRequests = reviews,
-                Repositories = repositories,
-                Contributions = contributions,
-                Copilot = copilot
-            };
-
-            if (!HasAnySection(retained))
-            {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
-                return new(null, new(DashboardCacheDiagnosticKind.Pruned,
-                    "Dashboard cache contained no reusable sections and was pruned."));
-            }
-
-            if (pruned || !string.Equals(record.Account.Login, account.Login, StringComparison.Ordinal))
-            {
-                var replacement = await ReplaceAsync(filePath, retained, cancellationToken).ConfigureAwait(false);
-                if (!replacement.Succeeded)
-                {
-                    return new(retained, replacement.Diagnostic with
-                    {
-                        Message = "Reusable dashboard cache was loaded, but obsolete sections could not be pruned."
-                    });
-                }
-                return new(retained, new(DashboardCacheDiagnosticKind.Pruned,
-                    "Reusable dashboard cache was loaded and obsolete sections were pruned."));
-            }
-
-            return new(retained, new(DashboardCacheDiagnosticKind.Loaded,
-                "Reusable dashboard cache was loaded for the verified account."));
+            return await ReadOwnedRecordAsync(filePath, account, now, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -309,6 +308,28 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 }
             }
             return await ReplaceAsync(filePath, record, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<DashboardCacheWriteResult> SelectAccountAsync(
+        DashboardCacheAccount account,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateAccount(account);
+        var operationGeneration = Volatile.Read(ref _generation);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (operationGeneration != _generation)
+            {
+                return InvalidatedWrite();
+            }
+
+            return await ReplaceSelectorAsync(account, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -378,6 +399,58 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
     }
 
+    private async Task<DashboardCacheWriteResult> ReplaceSelectorAsync(
+        DashboardCacheAccount account,
+        CancellationToken cancellationToken)
+    {
+        var filePath = GetSelectorFilePath();
+        var temporaryPath = filePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(_rootDirectory);
+            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(
+                    stream,
+                    new DashboardCacheSelector(DashboardCacheVersions.Selector, account),
+                    DashboardCacheJsonContext.Default.DashboardCacheSelector,
+                    cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            _beforeReplace?.Invoke(temporaryPath, filePath);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, filePath, overwrite: true);
+            return new(new(DashboardCacheDiagnosticKind.Written,
+                "The last-used dashboard account was saved without credentials."));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return new(new(DashboardCacheDiagnosticKind.WriteFailed,
+                "The dashboard was refreshed, but its last-used account selector could not be saved."));
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
+            catch (Exception exception) when (IsIoFailure(exception))
+            {
+                // A future selector read removes interrupted writes.
+            }
+        }
+    }
+
     private async Task<DashboardCacheClearResult> ClearWorkerAsync(
         CancellationToken cancellationToken)
     {
@@ -387,18 +460,18 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             _generation++;
             cancellationToken.ThrowIfCancellationRequested();
             var accountDirectory = Path.Combine(_rootDirectory, "github.com");
-            if (!Directory.Exists(accountDirectory))
-            {
-                return Cleared(0);
-            }
-
             string[] ownedFiles;
             try
             {
-                ownedFiles = Directory.EnumerateFiles(
-                        accountDirectory, "*", SearchOption.TopDirectoryOnly)
-                    .Where(IsOwnedCacheFile)
-                    .ToArray();
+                var accountFiles = Directory.Exists(accountDirectory)
+                    ? Directory.EnumerateFiles(accountDirectory, "*", SearchOption.TopDirectoryOnly)
+                        .Where(IsOwnedCacheFile)
+                    : [];
+                var selectorFiles = Directory.Exists(_rootDirectory)
+                    ? Directory.EnumerateFiles(_rootDirectory, $"{SelectorFileName}*", SearchOption.TopDirectoryOnly)
+                        .Where(IsOwnedSelectorFile)
+                    : [];
+                ownedFiles = accountFiles.Concat(selectorFiles).ToArray();
             }
             catch (Exception exception) when (IsIoFailure(exception))
             {
@@ -653,6 +726,263 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
     }
 
+    private async Task<DashboardCacheReadResult> ReadOwnedRecordAsync(
+        string filePath,
+        DashboardCacheAccount? expectedAccount,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await DeleteInterruptedWritesAsync(filePath).ConfigureAwait(false);
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException)
+        {
+            return Missing();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return Missing();
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return ReadFailed();
+        }
+
+        DashboardCacheRecord record;
+        try
+        {
+            if (stream.Length > MaximumFileSize)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return Malformed();
+            }
+
+            await using (stream)
+            {
+                record = await JsonSerializer.DeserializeAsync(
+                    stream, DashboardCacheJsonContext.Default.DashboardCacheRecord, cancellationToken)
+                    .ConfigureAwait(false) ?? throw new JsonException("Cache must contain an object.");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return Malformed();
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return ReadFailed();
+        }
+
+        if (record.SchemaVersion != DashboardCacheVersions.Schema)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return new(null, new(DashboardCacheDiagnosticKind.Incompatible,
+                "Dashboard cache used an incompatible schema or account partition and was ignored."));
+        }
+
+        try
+        {
+            ValidateAccount(record.Account);
+        }
+        catch (ArgumentException)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return Malformed();
+        }
+
+        var account = expectedAccount ?? record.Account;
+        if ((expectedAccount is not null && !AccountsMatch(expectedAccount, record.Account)) ||
+            !string.Equals(GetFilePath(record.Account), filePath, StringComparison.OrdinalIgnoreCase))
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return new(null, new(DashboardCacheDiagnosticKind.Incompatible,
+                "Dashboard cache used an incompatible schema or account partition and was ignored."));
+        }
+
+        var pruned = false;
+        var activity = Retain(record.Activity, DashboardCacheVersions.Activity, now, ref pruned);
+        var pulls = Retain(record.PullRequests, DashboardCacheVersions.PullRequests, now, ref pruned);
+        var reviews = Retain(record.ReviewRequests, DashboardCacheVersions.ReviewRequests, now, ref pruned);
+        var repositories = Retain(record.Repositories, DashboardCacheVersions.Repositories, now, ref pruned);
+        var contributions = Retain(record.Contributions, DashboardCacheVersions.Contributions, now, ref pruned);
+        var copilot = Retain(record.Copilot, DashboardCacheVersions.Copilot, now, ref pruned);
+
+        try
+        {
+            ValidateList(activity);
+            ValidateList(pulls);
+            ValidateList(reviews);
+            ValidateList(repositories);
+            ValidateContributions(contributions);
+            ValidateCopilot(copilot);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or InvalidOperationException)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return Malformed();
+        }
+
+        var retained = record with
+        {
+            Account = account,
+            Activity = activity,
+            PullRequests = pulls,
+            ReviewRequests = reviews,
+            Repositories = repositories,
+            Contributions = contributions,
+            Copilot = copilot
+        };
+
+        if (!HasAnySection(retained))
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return new(null, new(DashboardCacheDiagnosticKind.Pruned,
+                "Dashboard cache contained no reusable sections and was pruned."));
+        }
+
+        if (pruned || !string.Equals(record.Account.Login, account.Login, StringComparison.Ordinal))
+        {
+            var replacement = await ReplaceAsync(filePath, retained, cancellationToken)
+                .ConfigureAwait(false);
+            if (!replacement.Succeeded)
+            {
+                return new(retained, replacement.Diagnostic with
+                {
+                    Message = "Reusable dashboard cache was loaded, but obsolete sections could not be pruned."
+                });
+            }
+            return new(retained, new(DashboardCacheDiagnosticKind.Pruned,
+                "Reusable dashboard cache was loaded and obsolete sections were pruned."));
+        }
+
+        return new(retained, new(DashboardCacheDiagnosticKind.Loaded,
+            "Reusable dashboard cache was loaded for the saved account."));
+    }
+
+    private async Task<SelectorReadResult> ReadSelectorAsync(
+        CancellationToken cancellationToken)
+    {
+        var filePath = GetSelectorFilePath();
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (FileNotFoundException)
+        {
+            return new(null, null);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return new(null, null);
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return new(null, new(
+                DashboardCacheDiagnosticKind.ReadFailed,
+                "The last-used dashboard account selector could not be read; no other account was selected."));
+        }
+
+        try
+        {
+            if (stream.Length > MaximumFileSize)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return new(null, new(
+                    DashboardCacheDiagnosticKind.Malformed,
+                    "The malformed last-used dashboard account selector was ignored and removed."));
+            }
+
+            DashboardCacheSelector selector;
+            await using (stream)
+            {
+                selector = await JsonSerializer.DeserializeAsync(
+                    stream,
+                    DashboardCacheJsonContext.Default.DashboardCacheSelector,
+                    cancellationToken).ConfigureAwait(false)
+                    ?? throw new JsonException("Cache selector must contain an object.");
+            }
+
+            if (selector.SchemaVersion != DashboardCacheVersions.Selector)
+            {
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return new(null, new(
+                    DashboardCacheDiagnosticKind.Incompatible,
+                    "The last-used dashboard account selector used an incompatible schema and was removed."));
+            }
+            ValidateAccount(selector.Account);
+            return new(selector.Account, null);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or NotSupportedException)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            return new(null, new(
+                DashboardCacheDiagnosticKind.Malformed,
+                "The malformed last-used dashboard account selector was ignored and removed."));
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return new(null, new(
+                DashboardCacheDiagnosticKind.ReadFailed,
+                "The last-used dashboard account selector could not be read; no other account was selected."));
+        }
+    }
+
+    private async Task<DashboardCacheReadResult> FindLegacyLastUsedAccountAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var accountDirectory = Path.Combine(_rootDirectory, "github.com");
+        if (!Directory.Exists(accountDirectory))
+        {
+            return new(null, new(
+                DashboardCacheDiagnosticKind.Missing,
+                "No last-used dashboard account could be restored from this device."));
+        }
+
+        string[] candidates;
+        try
+        {
+            candidates = Directory.EnumerateFiles(accountDirectory, "*.json", SearchOption.TopDirectoryOnly)
+                .Where(IsOwnedCacheFile)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .ToArray();
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return ReadFailed();
+        }
+
+        if (candidates.Length == 0)
+        {
+            return new(null, new(
+                DashboardCacheDiagnosticKind.Missing,
+                "No last-used dashboard account could be restored from this device."));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return await ReadOwnedRecordAsync(
+            candidates[0], expectedAccount: null, now, cancellationToken).ConfigureAwait(false);
+    }
+
     private static DashboardListCacheSection? Retain(
         DashboardListCacheSection? section,
         int expectedRevision,
@@ -830,7 +1160,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
     private static DashboardCacheReadResult Missing() =>
         new(null, new(DashboardCacheDiagnosticKind.Missing,
-            "No dashboard cache exists for the verified account."));
+            "No dashboard cache exists for the selected saved account."));
 
     private static DashboardCacheReadResult Malformed() =>
         new(null, new(DashboardCacheDiagnosticKind.Malformed,
@@ -884,6 +1214,14 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             suffix.EndsWith(".tmp", StringComparison.Ordinal);
     }
 
+    private static bool IsOwnedSelectorFile(string filePath)
+    {
+        var fileName = Path.GetFileName(filePath);
+        return string.Equals(fileName, SelectorFileName, StringComparison.Ordinal) ||
+            fileName.StartsWith(SelectorFileName + ".", StringComparison.Ordinal) &&
+            fileName.EndsWith(".tmp", StringComparison.Ordinal);
+    }
+
     private static void TryDeleteEmptyDirectory(string directory)
     {
         try
@@ -907,6 +1245,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         {
             return Task.CompletedTask;
         }
+
         foreach (var temporaryPath in Directory.EnumerateFiles(
             directory, Path.GetFileName(filePath) + ".*.tmp", SearchOption.TopDirectoryOnly))
         {
@@ -922,6 +1261,29 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         return Task.CompletedTask;
     }
 
+    private Task DeleteInterruptedSelectorWritesAsync()
+    {
+        if (!Directory.Exists(_rootDirectory))
+        {
+            return Task.CompletedTask;
+        }
+        foreach (var temporaryPath in Directory.EnumerateFiles(
+            _rootDirectory, SelectorFileName + ".*.tmp", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (Exception exception) when (IsIoFailure(exception))
+            {
+                // The valid selector, if present, remains readable.
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private string GetSelectorFilePath() => Path.Combine(_rootDirectory, SelectorFileName);
+
     private static Task DeleteOwnedFileAsync(string filePath)
     {
         if (File.Exists(filePath))
@@ -932,8 +1294,17 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
     }
 }
 
+internal sealed record DashboardCacheSelector(
+    int SchemaVersion,
+    DashboardCacheAccount Account);
+
+internal sealed record SelectorReadResult(
+    DashboardCacheAccount? Account,
+    DashboardCacheDiagnostic? Diagnostic);
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = false)]
 [JsonSerializable(typeof(DashboardCacheRecord))]
+[JsonSerializable(typeof(DashboardCacheSelector))]
 internal partial class DashboardCacheJsonContext : JsonSerializerContext;

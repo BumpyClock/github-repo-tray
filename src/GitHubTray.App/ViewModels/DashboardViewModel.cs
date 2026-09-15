@@ -85,14 +85,18 @@ public sealed partial class SectionViewModel : ObservableObject
 
     public void Clear()
     {
+        ReleaseRows();
+        Error = "";
+        UpdatedLabel = "Not refreshed yet";
+    }
+
+    internal void ReleaseRows()
+    {
         _projectedSection = null;
         if (Items.Count != 0)
         {
             Items.Clear();
         }
-
-        Error = "";
-        UpdatedLabel = "Not refreshed yet";
     }
 
     public void Update(DashboardSection section)
@@ -132,6 +136,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private readonly DashboardStartup _startup;
     private readonly DashboardRefreshSession _refreshSession;
     private readonly SettingsStore _settingsStore;
+    private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _refreshTimer;
     private readonly DispatcherQueueTimer _clockTimer;
     private readonly DashboardPresentationClock _presentationClock;
@@ -145,7 +150,8 @@ public sealed partial class DashboardViewModel : ObservableObject
     private Task? _clearCacheTask;
     private Task? _shutdownTask;
     private AppSettings _committedSettings = new();
-    private DashboardSnapshot? _cacheInvalidatedSnapshot;
+    // Cache clearing may finish while hidden; its marker must not retain an obsolete snapshot.
+    private WeakReference<DashboardSnapshot>? _cacheInvalidatedSnapshot;
     private ContributionCellSizePreset _contributionCellSize = ContributionCellSizePreset.Medium;
     private int? _pendingRefreshMinutes;
     private bool _isPreferenceSaveReady;
@@ -158,7 +164,9 @@ public sealed partial class DashboardViewModel : ObservableObject
         _startup = startup;
         _refreshSession = startup.Session;
         _settingsStore = startup.SettingsStore;
-        _stateProjection = new(ApplyRefreshStateCore);
+        _dispatcher = dispatcher;
+        _stateProjection = new(ApplyRefreshStateCore, ReleasePresentation);
+        _refreshSession.StateChanged += OnSessionStateChanged;
         Sections =
         [
             new("Activity", "No recent activity returned for this account.", Symbol.Clock, isRepositoryFirst: true),
@@ -209,7 +217,16 @@ public sealed partial class DashboardViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
     [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
     [NotifyPropertyChangedFor(nameof(ContributionStatus))]
+    [NotifyPropertyChangedFor(nameof(AccountDisplayName))]
     public partial bool IsAccountVerified { get; private set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
+    [NotifyPropertyChangedFor(nameof(EmptyTitle))]
+    [NotifyPropertyChangedFor(nameof(EmptyMessage))]
+    [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
+    [NotifyPropertyChangedFor(nameof(ContributionStatus))]
+    public partial bool HasDisplayableData { get; private set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AccountHandle))]
@@ -217,13 +234,20 @@ public sealed partial class DashboardViewModel : ObservableObject
     public partial string AccountLabel { get; set; } = "Checking GitHub CLI account…";
 
     public string AccountHandle => _lastProjectedSnapshot is { } snapshot ? $"@{snapshot.User.Login}" : AccountLabel;
-    public string AccountDisplayName => _lastProjectedSnapshot?.User.DisplayName ?? "";
+    public string AccountDisplayName => _lastProjectedSnapshot is not { } snapshot
+        ? ""
+        : IsAccountVerified
+            ? snapshot.User.DisplayName
+            : HasRefreshError
+                ? "Saved account · verification failed"
+                : "Saved account · verification pending";
 
     [ObservableProperty]
     public partial string AccountDescription { get; set; } = "Uses the current github.com account resolved by GitHub CLI.";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasRefreshError))]
+    [NotifyPropertyChangedFor(nameof(AccountDisplayName))]
     public partial string RefreshError { get; set; } = "";
 
     [ObservableProperty]
@@ -330,14 +354,17 @@ public sealed partial class DashboardViewModel : ObservableObject
     public bool CanRefresh => !_isShuttingDown && !IsRefreshing && !IsClearingCachedData;
     public bool CanSaveSettings => !_isShuttingDown && IsSettingsLoaded && !IsSavingSettings;
     public bool CanClearCachedData => !_isShuttingDown && !IsClearingCachedData;
-    public ContributionCalendar? VisibleContributionCalendar => IsAccountVerified ? Contributions.Calendar : null;
+    public ContributionCalendar? VisibleContributionCalendar =>
+        HasDisplayableData ? Contributions.Calendar : null;
     public string ContributionStatus
     {
         get
         {
-            if (!IsAccountVerified)
+            if (!HasDisplayableData)
             {
-                return IsRefreshing ? "Loading contributions · verifying GitHub CLI account…" : "Contributions hidden until the GitHub CLI account is verified.";
+                return IsRefreshing
+                    ? "Loading contributions · verifying GitHub CLI account…"
+                    : "Contributions have not been loaded.";
             }
 
             if (Contributions.Error is { } error)
@@ -364,16 +391,16 @@ public sealed partial class DashboardViewModel : ObservableObject
         }
     }
 
-    public bool IsEmptyVisible => !IsAccountVerified || SelectedSection.Items.Count == 0;
-    public string EmptyTitle => IsRefreshing && !IsAccountVerified
+    public bool IsEmptyVisible => !HasDisplayableData || SelectedSection.Items.Count == 0;
+    public string EmptyTitle => IsRefreshing && !HasDisplayableData
         ? "Checking your GitHub account"
-        : !IsAccountVerified ? "GitHub account unavailable"
+        : !HasDisplayableData ? "GitHub account unavailable"
         : SelectedSection.HasError && SelectedSection.Items.Count == 0 ? "This section could not be loaded"
         : SelectedSection.Items.Count == 0 && IsRefreshing ? "Refreshing…" : "You're up to date";
-    public string EmptyMessage => IsRefreshing && !IsAccountVerified
+    public string EmptyMessage => IsRefreshing && !HasDisplayableData
         ? "Reading your existing GitHub CLI session. No sign-in window will open."
-        : !IsAccountVerified
-            ? "Check your GitHub CLI session in a terminal, then choose Refresh. Previous account data stays hidden until the account is verified."
+        : !HasDisplayableData
+            ? "Check your GitHub CLI session in a terminal, then choose Refresh."
             : SelectedSection.HasError
                 ? "Choose Refresh to try again. Other sections may still be available."
                 : SelectedSection.EmptyMessage;
@@ -455,11 +482,27 @@ public sealed partial class DashboardViewModel : ObservableObject
         _stateProjection.Publish(PrepareRefreshState(state));
     }
 
+    private void OnSessionStateChanged()
+    {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
+        _ = _dispatcher.TryEnqueue(() =>
+        {
+            if (!_isShuttingDown)
+            {
+                PublishRefreshState(_refreshSession.State);
+            }
+        });
+    }
+
     private DashboardSessionState PrepareRefreshState(DashboardSessionState state)
     {
         if (_cacheInvalidatedSnapshot is not null &&
             (state.IsRefreshing ||
-             !ReferenceEquals(_cacheInvalidatedSnapshot, state.Snapshot)))
+             !IsCacheInvalidatedSnapshot(state.Snapshot)))
         {
             _cacheInvalidatedSnapshot = null;
         }
@@ -467,13 +510,18 @@ public sealed partial class DashboardViewModel : ObservableObject
         return state;
     }
 
+    private bool IsCacheInvalidatedSnapshot(DashboardSnapshot? snapshot) =>
+        _cacheInvalidatedSnapshot is not null &&
+        _cacheInvalidatedSnapshot.TryGetTarget(out var invalidated) &&
+        ReferenceEquals(invalidated, snapshot);
+
     private void ApplyRefreshStateCore(DashboardSessionState state)
     {
         if (state.Snapshot is { } snapshot)
         {
             var showCacheInvalidated =
                 !state.IsRefreshing &&
-                ReferenceEquals(_cacheInvalidatedSnapshot, snapshot);
+                IsCacheInvalidatedSnapshot(snapshot);
 
             if (!ReferenceEquals(_lastProjectedSnapshot, snapshot))
             {
@@ -490,15 +538,18 @@ public sealed partial class DashboardViewModel : ObservableObject
                 : $"{snapshot.User.DisplayName} · @{snapshot.User.Login}";
             AccountDescription = DashboardSnapshotPresentation.AccountDescription(
                 snapshot,
-                state.IsRefreshing);
+                state.IsRefreshing,
+                state.IsAccountVerified);
             if (showCacheInvalidated)
             {
                 AccountDescription = "The displayed dashboard remains available, but its reusable cached data was invalidated. The next refresh fetches every section.";
             }
-            IsAccountVerified = true;
+            HasDisplayableData = true;
+            IsAccountVerified = state.IsAccountVerified;
         }
         else
         {
+            HasDisplayableData = false;
             IsAccountVerified = false;
             _cacheInvalidatedSnapshot = null;
             _lastProjectedSnapshot = null;
@@ -508,7 +559,16 @@ public sealed partial class DashboardViewModel : ObservableObject
             }
 
             Contributions = new(null, null, null);
-            if (state.IsRefreshing && state.LastKnownLogin is null && state.Error is null)
+            if (state.Account is { } account)
+            {
+                AccountLabel = state.IsAccountVerified
+                    ? $"Verified account @{account.Login}"
+                    : $"Account unverified · last seen @{account.Login}";
+                AccountDescription = state.IsAccountVerified
+                    ? $"Verified github.com account: @{account.Login}. Dashboard sections are loading."
+                    : "The current CLI account could not be verified and no saved dashboard was available.";
+            }
+            else if (state.IsRefreshing && state.LastKnownLogin is null && state.Error is null)
             {
                 AccountLabel = "Checking GitHub CLI account…";
                 AccountDescription = "Uses the current github.com account resolved by GitHub CLI.";
@@ -523,10 +583,33 @@ public sealed partial class DashboardViewModel : ObservableObject
         }
 
         RefreshError = state.Error is { } error
-            ? $"{error} Previous data is not current and remains hidden until the account is verified."
+            ? state.Snapshot is { } saved
+                ? $"{error} Showing saved data for @{saved.User.Login}; it remains unverified."
+                : error
             : "";
         IsRefreshing = state.IsRefreshing;
-        CopilotDisplay = CopilotUsageViewModel.Create(state.Snapshot?.Copilot, state.IsAccountVerified, state.IsRefreshing);
+        CopilotDisplay = CopilotUsageViewModel.Create(
+            state.Snapshot?.Copilot,
+            state.HasDisplayableData,
+            state.IsRefreshing,
+            accountVerified: state.IsAccountVerified);
+        NotifyEmptyState();
+    }
+
+    private void ReleasePresentation()
+    {
+        _lastProjectedSnapshot = null;
+        foreach (var section in Sections)
+        {
+            section.ReleaseRows();
+        }
+
+        Contributions = new(null, null, null);
+        CopilotDisplay = CopilotUsageViewModel.Create(null, displayable: false, refreshing: IsRefreshing);
+        HasDisplayableData = false;
+        IsAccountVerified = false;
+        OnPropertyChanged(nameof(AccountHandle));
+        OnPropertyChanged(nameof(AccountDisplayName));
         NotifyEmptyState();
     }
 
@@ -578,7 +661,7 @@ public sealed partial class DashboardViewModel : ObservableObject
                 CacheClearWarning = presentation.Warning;
                 _cacheInvalidatedSnapshot =
                     _refreshSession.State is { Snapshot: { } snapshot, IsRefreshing: false }
-                        ? snapshot
+                        ? new(snapshot)
                         : null;
                 PublishRefreshState(_refreshSession.State);
             }
@@ -715,12 +798,13 @@ public sealed partial class DashboardViewModel : ObservableObject
         if (isVisible)
         {
             _stateProjection.Reveal(() => PrepareRefreshState(_refreshSession.State));
+            _presentationClock.SetVisible(true);
         }
         else
         {
+            _presentationClock.SetVisible(false);
             _stateProjection.Hide();
         }
-        _presentationClock.SetVisible(isVisible);
     }
 
     private void OnClockTimerTick(DispatcherQueueTimer sender, object args) => _presentationClock.Tick();
@@ -735,7 +819,11 @@ public sealed partial class DashboardViewModel : ObservableObject
             }
         }
         var state = _refreshSession.State;
-        CopilotDisplay = CopilotUsageViewModel.Create(state.Snapshot?.Copilot, state.IsAccountVerified, state.IsRefreshing);
+        CopilotDisplay = CopilotUsageViewModel.Create(
+            state.Snapshot?.Copilot,
+            state.HasDisplayableData,
+            state.IsRefreshing,
+            accountVerified: state.IsAccountVerified);
     }
 
     public Task ShutdownAsync() => _shutdownTask ??= ShutdownCoreAsync();
@@ -743,6 +831,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private async Task ShutdownCoreAsync()
     {
         _isShuttingDown = true;
+        _refreshSession.StateChanged -= OnSessionStateChanged;
         IsSettingsLoaded = false;
         _refreshTimer.Stop();
         _refreshTimer.Tick -= OnRefreshTimerTick;

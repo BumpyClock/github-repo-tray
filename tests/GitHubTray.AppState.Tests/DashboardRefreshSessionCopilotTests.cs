@@ -73,6 +73,7 @@ public sealed class DashboardRefreshSessionCopilotTests
         await fixture.RefreshAsync();
 
         SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.Null(fixture.Session.State.Snapshot);
         Assert.Contains("account changed while loading Copilot usage", fixture.Session.State.Error);
     }
 

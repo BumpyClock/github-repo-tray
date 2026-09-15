@@ -57,12 +57,16 @@ public sealed record CopilotUsageViewModel(
     public ReadOnlyCollection<CopilotQuotaViewModel> GetQuotaItems() => Array.AsReadOnly(Quotas.ToArray());
 
     public static CopilotUsageViewModel Create(
-        CopilotUsageSection? section, bool verified, bool refreshing, DateTimeOffset? now = null)
+        CopilotUsageSection? section,
+        bool displayable,
+        bool refreshing,
+        DateTimeOffset? now = null,
+        bool accountVerified = true)
     {
-        if (!verified)
+        if (!displayable)
         {
             return new("", [], refreshing ? "Loading Copilot usage..."
-                : "Copilot usage hidden until the GitHub CLI account is verified.", false);
+                : "Copilot usage has not been loaded.", false);
         }
 
         var usage = section?.Usage;
@@ -91,11 +95,17 @@ public sealed record CopilotUsageViewModel(
             : section?.Source == DashboardSectionSource.Cached
                 ? section.UpdatedAt is { } cachedAt
                     ? refreshing
-                        ? $"Cached from {cachedAt.ToLocalTime():g}. Refreshing Copilot usage..."
-                        : $"Cached from {cachedAt.ToLocalTime():g}."
+                        ? $"Cached from {cachedAt.ToLocalTime():g}. " +
+                          $"{(accountVerified ? "Refreshing Copilot usage..." : "Account verification pending...")}"
+                        : $"Cached from {cachedAt.ToLocalTime():g}." +
+                          (accountVerified ? "" : " Account unverified.")
                     : refreshing
-                        ? "Cached Copilot usage. Refreshing..."
-                        : "Cached Copilot usage."
+                        ? accountVerified
+                            ? "Cached Copilot usage. Refreshing..."
+                            : "Cached Copilot usage. Account verification pending..."
+                        : accountVerified
+                            ? "Cached Copilot usage."
+                            : "Cached Copilot usage. Account unverified."
             : refreshing ? "Refreshing Copilot usage..."
             : usage is null ? "Copilot usage has not been loaded."
             : rows.IsEmpty ? "No metered Copilot quota." : "";

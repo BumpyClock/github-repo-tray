@@ -44,6 +44,202 @@ public sealed class DashboardCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ExplicitLastUsedSelectionIsIndependentOfSectionSuccessTimes()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(
+            activity: ListSection("newer-section") with { SucceededAt = Now.AddMinutes(-1) }));
+        await store.WriteAsync(Record(
+            other,
+            activity: ListSection("older-section") with { SucceededAt = Now.AddDays(-1) }));
+        await store.SelectAccountAsync(other);
+
+        var selected = await store.ReadLastUsedAsync(Now);
+
+        Assert.Equal(other, selected.Record!.Account);
+        Assert.Equal("older-section", Assert.Single(selected.Record.Activity!.Items).Id);
+    }
+
+    [Fact]
+    public async Task LegacyRecordsMigrateUsingLastWriteTimeThenKeepTheDurableSelection()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(
+            activity: ListSection("newer-section") with { SucceededAt = Now.AddMinutes(-1) }));
+        await store.WriteAsync(Record(
+            other,
+            activity: ListSection("older-section") with { SucceededAt = Now.AddDays(-1) }));
+        File.SetLastWriteTimeUtc(store.GetFilePath(Octocat), Now.AddMinutes(-2).UtcDateTime);
+        File.SetLastWriteTimeUtc(store.GetFilePath(other), Now.AddMinutes(-1).UtcDateTime);
+
+        var migrated = await store.ReadLastUsedAsync(Now);
+        File.SetLastWriteTimeUtc(store.GetFilePath(Octocat), Now.UtcDateTime);
+        var selectedAgain = await store.ReadLastUsedAsync(Now);
+
+        Assert.Equal(DashboardCacheDiagnosticKind.Migrated, migrated.Diagnostic.Kind);
+        Assert.Equal(other, migrated.Record!.Account);
+        Assert.Equal(other, selectedAgain.Record!.Account);
+        Assert.True(File.Exists(Path.Combine(_directory, "last-account.json")));
+    }
+
+    [Theory]
+    [InlineData("malformed", DashboardCacheDiagnosticKind.Malformed)]
+    [InlineData("incompatible", DashboardCacheDiagnosticKind.Incompatible)]
+    public async Task InvalidSelectorDoesNotSilentlyFallBackToAnotherAccount(
+        string selectorKind,
+        DashboardCacheDiagnosticKind expectedDiagnostic)
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(activity: ListSection("octocat")));
+        await store.WriteAsync(Record(other, activity: ListSection("other")));
+        var selectorPath = Path.Combine(_directory, "last-account.json");
+        await File.WriteAllTextAsync(
+            selectorPath,
+            selectorKind == "malformed"
+                ? "not-json"
+                : """{"schemaVersion":999,"account":{"host":"github.com","userId":2,"login":"other"}}""");
+
+        var result = await store.ReadLastUsedAsync(Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(expectedDiagnostic, result.Diagnostic.Kind);
+        Assert.False(File.Exists(selectorPath));
+    }
+
+    [Fact]
+    public async Task UnreadableSelectorDoesNotSilentlyFallBackToAnotherAccount()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        await store.WriteAsync(Record(activity: ListSection("octocat")));
+        await store.SelectAccountAsync(Octocat);
+        var selectorPath = Path.Combine(_directory, "last-account.json");
+        await using var locked = new FileStream(
+            selectorPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var result = await store.ReadLastUsedAsync(Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.ReadFailed, result.Diagnostic.Kind);
+        Assert.True(File.Exists(selectorPath));
+    }
+
+    [Fact]
+    public async Task LegacyMigrationPrunesExpiredInvalidSectionsBeforeValidatingReusableData()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        await store.WriteAsync(Record(
+            activity: ListSection("expired") with
+            {
+                SucceededAt = Now - JsonDashboardCacheStore.Retention
+            },
+            pullRequests: ListSection(
+                "eligible", DashboardCacheVersions.PullRequests)));
+        var path = store.GetFilePath(Octocat);
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        root["activity"]!["items"]![0]!["title"] = null;
+        await File.WriteAllTextAsync(path, root.ToJsonString());
+
+        var result = await store.ReadLastUsedAsync(Now);
+
+        Assert.Equal(DashboardCacheDiagnosticKind.Migrated, result.Diagnostic.Kind);
+        Assert.Null(result.Record!.Activity);
+        Assert.Equal("eligible", Assert.Single(result.Record.PullRequests!.Items).Id);
+    }
+
+    [Theory]
+    [InlineData("expired", DashboardCacheDiagnosticKind.Pruned)]
+    [InlineData("invalid", DashboardCacheDiagnosticKind.Malformed)]
+    public async Task UnusableLegacyRecordReturnsItsExplicitDiagnostic(
+        string kind,
+        DashboardCacheDiagnosticKind expectedDiagnostic)
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var older = new DashboardCacheAccount("github.com", 2, "older");
+        await store.WriteAsync(Record(
+            older,
+            activity: ListSection("older-valid")));
+        await store.WriteAsync(Record(activity: ListSection("legacy") with
+        {
+            SucceededAt = kind == "expired"
+                ? Now - JsonDashboardCacheStore.Retention
+                : Now.AddHours(-1)
+        }));
+        var path = store.GetFilePath(Octocat);
+        if (kind == "invalid")
+        {
+            await File.WriteAllTextAsync(path, "not-json");
+        }
+        File.SetLastWriteTimeUtc(store.GetFilePath(older), Now.AddMinutes(-2).UtcDateTime);
+        File.SetLastWriteTimeUtc(path, Now.AddMinutes(-1).UtcDateTime);
+
+        var result = await store.ReadLastUsedAsync(Now);
+
+        Assert.Null(result.Record);
+        Assert.Equal(expectedDiagnostic, result.Diagnostic.Kind);
+        Assert.False(File.Exists(path));
+        Assert.True(File.Exists(store.GetFilePath(older)));
+        Assert.False(File.Exists(Path.Combine(_directory, "last-account.json")));
+    }
+
+    [Fact]
+    public async Task FailedLegacySelectorMigrationReturnsReusableDataWithWriteDiagnostic()
+    {
+        var initialStore = new JsonDashboardCacheStore(_directory);
+        await initialStore.WriteAsync(Record(activity: ListSection("legacy")));
+        var failingStore = new JsonDashboardCacheStore(
+            _directory,
+            (_, destination) =>
+            {
+                if (destination.EndsWith("last-account.json", StringComparison.Ordinal))
+                {
+                    throw new IOException("Injected selector failure");
+                }
+            });
+
+        var result = await failingStore.ReadLastUsedAsync(Now);
+
+        Assert.NotNull(result.Record);
+        Assert.Equal("legacy", Assert.Single(result.Record.Activity!.Items).Id);
+        Assert.Equal(DashboardCacheDiagnosticKind.WriteFailed, result.Diagnostic.Kind);
+        Assert.False(File.Exists(Path.Combine(_directory, "last-account.json")));
+    }
+
+    [Fact]
+    public async Task ClearBetweenSelectorAndRecordReadInvalidatesTheWholeLastUsedOperation()
+    {
+        using var readReady = new ManualResetEventSlim();
+        using var releaseRead = new ManualResetEventSlim();
+        var initialStore = new JsonDashboardCacheStore(_directory);
+        await initialStore.WriteAsync(Record(activity: ListSection("selected")));
+        await initialStore.SelectAccountAsync(Octocat);
+        var store = new JsonDashboardCacheStore(
+            _directory,
+            null,
+            null,
+            () =>
+            {
+                readReady.Set();
+                if (!releaseRead.Wait(TimeSpan.FromSeconds(10)))
+                {
+                    throw new TimeoutException("The test did not release the record read.");
+                }
+            });
+
+        var read = Task.Run(() => store.ReadLastUsedAsync(Now));
+        Assert.True(readReady.Wait(TimeSpan.FromSeconds(10)));
+        var clear = await store.ClearAsync();
+        releaseRead.Set();
+        var result = await read;
+
+        Assert.True(clear.Succeeded);
+        Assert.Null(result.Record);
+        Assert.Equal(DashboardCacheDiagnosticKind.Invalidated, result.Diagnostic.Kind);
+    }
+
+    [Fact]
     public async Task ExactSevenDayBoundaryIsPrunedPerSectionWithoutRenewingOtherTimestamps()
     {
         var store = new JsonDashboardCacheStore(_directory);
@@ -87,6 +283,7 @@ public sealed class DashboardCacheStoreTests : IDisposable
         var other = new DashboardCacheAccount("github.com", 2, "other");
         await store.WriteAsync(Record(activity: ListSection("octocat")));
         await store.WriteAsync(Record(other, activity: ListSection("other")));
+        await store.SelectAccountAsync(other);
 
         var octocat = await store.ReadAsync(Octocat with { Login = "OCTOCAT" }, Now);
         var second = await store.ReadAsync(other, Now);
@@ -492,6 +689,7 @@ public sealed class DashboardCacheStoreTests : IDisposable
         var other = new DashboardCacheAccount("github.com", 2, "other");
         await store.WriteAsync(Record(activity: ListSection("octocat")));
         await store.WriteAsync(Record(other, activity: ListSection("other")));
+        await store.SelectAccountAsync(other);
         var accountDirectory = Path.GetDirectoryName(store.GetFilePath(Octocat))!;
         var interrupted = Path.Combine(accountDirectory, "3.json.interrupted.tmp");
         var unrelated = Path.Combine(accountDirectory, "readme.txt");
@@ -503,11 +701,12 @@ public sealed class DashboardCacheStoreTests : IDisposable
         var result = await store.ClearAsync();
 
         Assert.True(result.Succeeded);
-        Assert.Equal(3, result.DeletedFileCount);
+        Assert.Equal(4, result.DeletedFileCount);
         Assert.Equal(0, result.FailedFileCount);
         Assert.False(File.Exists(store.GetFilePath(Octocat)));
         Assert.False(File.Exists(store.GetFilePath(other)));
         Assert.False(File.Exists(interrupted));
+        Assert.False(File.Exists(Path.Combine(_directory, "last-account.json")));
         Assert.Equal("keep", await File.ReadAllTextAsync(unrelated));
         Assert.Equal("""{"RefreshMinutes":10}""", await File.ReadAllTextAsync(settings));
     }

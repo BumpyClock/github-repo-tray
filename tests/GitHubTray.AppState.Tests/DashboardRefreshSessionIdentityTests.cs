@@ -20,7 +20,7 @@ public sealed class DashboardRefreshSessionIdentityTests
     }
 
     [Fact]
-    public async Task IdentityOutageHidesRowsAndCalendarUntilAnExplicitVerifiedRecovery()
+    public async Task IdentityOutageKeepsRowsAndCalendarReadableUntilVerifiedRecovery()
     {
         await using var fixture = new RefreshSessionFixture();
         await fixture.RefreshAsync();
@@ -32,6 +32,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
         var failed = fixture.Session.State;
         SessionAssertions.Unverified(failed, "octocat");
+        Assert.Same(verified.Snapshot, failed.Snapshot);
         Assert.Equal("Signed out", failed.Error);
         Assert.Equal(9, fixture.Api.Requests.Length);
         SessionAssertions.Success(verified);
@@ -42,10 +43,10 @@ public sealed class DashboardRefreshSessionIdentityTests
         fixture.Api.Use(recovery);
         var refresh = fixture.Session.RefreshAsync();
         Assert.True(fixture.Session.State.IsRefreshing);
-        Assert.False(fixture.Session.State.IsAccountVerified);
-        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.NotNull(fixture.Session.State.Snapshot);
         await gate.EnteredAsync();
-        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.NotNull(fixture.Session.State.Snapshot);
         Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
         gate.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
@@ -70,6 +71,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
         var failed = fixture.Session.State;
         SessionAssertions.Unverified(failed, "octocat");
+        Assert.NotNull(failed.Snapshot);
 
         var recovery = RefreshResponses.Success(login, "not-loaded");
         recovery.FailSections();
@@ -103,6 +105,7 @@ public sealed class DashboardRefreshSessionIdentityTests
             fixture.Api.Use(outage);
             await fixture.RefreshAsync();
             SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            Assert.NotNull(fixture.Session.State.Snapshot);
         }
         var switched = RefreshResponses.Success("different-account", "new-private");
         switched.FailSections();
@@ -153,7 +156,8 @@ public sealed class DashboardRefreshSessionIdentityTests
 
         await fixture.RefreshAsync();
 
-        SessionAssertions.Unverified(fixture.Session.State, hasPrevious ? "octocat" : null);
+        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.Null(fixture.Session.State.Snapshot);
         Assert.Equal("The GitHub account changed while loading contributions. Refresh again to load the current account.",
             fixture.Session.State.Error);
         Assert.Equal(hasPrevious ? 15 : 7, fixture.Api.Requests.Length);
@@ -166,7 +170,10 @@ public sealed class DashboardRefreshSessionIdentityTests
             fixture.Api.Use(recovery);
             await fixture.RefreshAsync();
             Assert.Null(fixture.Session.State.Error);
-            SessionAssertions.Retained(previous, Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot));
+            var recovered = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
+            Assert.All(SessionAssertions.Sections(recovered), section => Assert.Empty(section.Items));
+            Assert.Null(recovered.Contributions.Calendar);
+            Assert.Null(recovered.Copilot.Usage);
         }
     }
 
@@ -194,7 +201,17 @@ public sealed class DashboardRefreshSessionIdentityTests
 
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
 
-        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        if (accountChanged)
+        {
+            Assert.True(fixture.Session.State.IsAccountVerified);
+            Assert.Null(fixture.Session.State.Snapshot);
+            Assert.Equal("different-account", fixture.Session.State.Account!.Login);
+        }
+        else
+        {
+            SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            Assert.Same(original, fixture.Session.State.Snapshot);
+        }
         Assert.Equal(accountChanged
                 ? "The GitHub account changed during refresh. No new data was displayed. Refresh again to load the current account."
                 : "Final identity unavailable",
@@ -208,9 +225,64 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
         Assert.True(fixture.Session.State.IsAccountVerified);
         Assert.Null(fixture.Session.State.Error);
-        SessionAssertions.Retained(original, Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot));
+        var recovered = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
+        if (accountChanged)
+        {
+            Assert.All(SessionAssertions.Sections(recovered), section => Assert.Empty(section.Items));
+            Assert.Null(recovered.Contributions.Calendar);
+            Assert.Null(recovered.Copilot.Usage);
+        }
+        else
+        {
+            SessionAssertions.Retained(original, recovered);
+        }
         SessionAssertions.Success(originalState);
         Assert.Equal(24, fixture.Api.Requests.Length);
+    }
+
+    [Fact]
+    public async Task FailedFinalIdentityWithoutCacheLeavesConfirmedInitialAccountUnverified()
+    {
+        await using var fixture = new RefreshSessionFixture();
+        var responses = RefreshResponses.Success(revision: "must-not-publish");
+        responses.FinalUser = responses.FinalUser with
+        {
+            Failure = new GitHubException("Final identity unavailable")
+        };
+        fixture.Api.Use(responses);
+
+        await fixture.RefreshAsync();
+
+        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("octocat", fixture.Session.State.Account!.Login);
+        Assert.Equal("Final identity unavailable", fixture.Session.State.Error);
+    }
+
+    [Fact]
+    public async Task InitialIdentityFailureAfterConfirmedSwitchDoesNotRetainVerifiedTrust()
+    {
+        await using var fixture = new RefreshSessionFixture();
+        var switched = RefreshResponses.Success(revision: "must-not-publish");
+        switched.FinalUser = RefreshResponses.User("different-account");
+        fixture.Api.Use(switched);
+        await fixture.RefreshAsync();
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
+
+        var outage = RefreshResponses.Success("different-account");
+        outage.InitialUser = outage.InitialUser with
+        {
+            Failure = new GitHubException("Initial identity unavailable")
+        };
+        fixture.Api.Use(outage);
+        await fixture.RefreshAsync();
+
+        SessionAssertions.Unverified(fixture.Session.State, "different-account");
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
+        Assert.Equal("Initial identity unavailable", fixture.Session.State.Error);
     }
 
     [Fact]

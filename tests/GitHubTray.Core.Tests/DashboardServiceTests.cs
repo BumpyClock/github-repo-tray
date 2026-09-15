@@ -400,6 +400,71 @@ public sealed class DashboardServiceTests
         Assert.NotSame(previous.Activity, result.Snapshot.Activity);
     }
 
+    [Theory]
+    [InlineData("cache")]
+    [InlineData("identity")]
+    public async Task RetentionEligibilityUsesTimeAfterSlowStartupWork(string slowPhase)
+    {
+        var start = new DateTimeOffset(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);
+        var clock = new ManualTimeProvider(start);
+        var cachedAt = start - JsonDashboardCacheStore.Retention + TimeSpan.FromMinutes(1);
+        var cache = new RecordingCacheStore
+        {
+            ReadRecord = new(
+                DashboardCacheVersions.Schema,
+                new("github.com", 1, "octocat"),
+                new(
+                    DashboardCacheVersions.Activity,
+                    cachedAt,
+                    [
+                        new(
+                            "cached",
+                            "Cached",
+                            "octocat/tray",
+                            "cached",
+                            cachedAt,
+                            new Uri("https://github.com/octocat/tray"))
+                    ]),
+                null, null, null, null, null)
+        };
+        var api = new FakeApi();
+        if (slowPhase == "cache")
+        {
+            cache.BeforeRead = () => clock.Advance(TimeSpan.FromMinutes(2));
+        }
+        else
+        {
+            api.BeforeUser = () =>
+            {
+                api.BeforeUser = null;
+                clock.Advance(TimeSpan.FromMinutes(2));
+            };
+        }
+
+        var hydratedSnapshots = new List<DashboardSnapshot?>();
+        var result = await new DashboardService(api, cache, clock)
+            .RefreshWithHydrationAsync(
+                new(
+                    DashboardRefreshReason.Startup,
+                    JsonDashboardCacheStore.Retention + TimeSpan.FromDays(1)),
+                null,
+                hydratedSnapshots.Add);
+
+        if (slowPhase == "cache")
+        {
+            Assert.Null(Assert.Single(hydratedSnapshots));
+        }
+        else
+        {
+            Assert.Equal("cached", Assert.Single(
+                Assert.IsType<DashboardSnapshot>(Assert.Single(hydratedSnapshots)).Activity.Items).Id);
+        }
+        Assert.Contains(api.Endpoints,
+            endpoint => endpoint.StartsWith("users/", StringComparison.Ordinal));
+        Assert.Equal("1", Assert.Single(result.Snapshot.Activity.Items).Id);
+        Assert.Equal(DashboardSectionSource.Live, result.Snapshot.Activity.Source);
+    }
+
     [Fact]
     public async Task UnknownEventTypesStillHaveSafeRepositoryLinksAndTimestamps()
     {
@@ -579,22 +644,26 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
-    public async Task InitialIdentityFailureDoesNotReadOrWriteAccountCache()
+    public async Task InitialIdentityFailureStillCompletesLocalCacheLookupWithoutWriting()
     {
         var api = new FakeApi { FailUser = true };
         var cache = new RecordingCacheStore();
         var service = new DashboardService(api, cache);
 
+        DashboardSnapshot? hydrated = new DashboardSnapshot(
+            new("github.com", 1, "sentinel", "Sentinel", new("https://github.com/sentinel")),
+            new([], null, null), new([], null, null), new([], null, null), new([], null, null));
         await Assert.ThrowsAsync<GitHubException>(() =>
-            service.RefreshWithHydrationAsync(null, _ => Assert.Fail("Cache must not publish.")));
+            service.RefreshWithHydrationAsync(null, value => hydrated = value));
 
-        Assert.Equal(0, cache.ReadCount);
+        Assert.Null(hydrated);
+        Assert.Equal(1, cache.ReadCount);
         Assert.Empty(cache.Writes);
         Assert.Equal(["user"], api.Endpoints);
     }
 
     [Fact]
-    public async Task MismatchedCacheRecordCannotPublishIntoVerifiedAccount()
+    public async Task LastUsedCachePublishesBeforeAConfirmedDifferentAccount()
     {
         var cache = new RecordingCacheStore
         {
@@ -610,9 +679,9 @@ public sealed class DashboardServiceTests
         var snapshot = await new DashboardService(api, cache)
             .RefreshWithHydrationAsync(null, value => hydrated = value);
 
-        Assert.Null(hydrated);
+        Assert.Equal("other", hydrated!.User.Login);
         Assert.Equal("octocat", snapshot.User.Login);
-        Assert.Equal(1, cache.ReadCount);
+        Assert.Equal(2, cache.ReadCount);
         Assert.Equal(1, Assert.Single(cache.Writes).Account.UserId);
     }
 
@@ -666,6 +735,7 @@ public sealed class DashboardServiceTests
         public bool IncompleteSearch { get; set; }
         public Action? AfterQuery { get; set; }
         public Action? AfterCopilot { get; set; }
+        public Action? BeforeUser { get; set; }
         public string PullUrl { get; set; } = "https://github.com/octocat/tray/pull/42";
         public string RepositoryResponse { get; set; } =
             """[{"full_name":"octocat/tray","html_url":"https://github.com/octocat/tray","description":"A native tray app","language":"C#","private":true,"archived":false,"pushed_at":null,"updated_at":"2026-09-01T10:30:00Z"}]""";
@@ -710,6 +780,7 @@ public sealed class DashboardServiceTests
             }
             if (endpoint == "user")
             {
+                BeforeUser?.Invoke();
                 if (FailUser)
                 {
                     throw new GitHubException("Signed out");
@@ -754,8 +825,23 @@ public sealed class DashboardServiceTests
         public DashboardCacheRecord? ReadRecord { get; init; }
         public DashboardCacheClearResult? ClearResult { get; init; }
         public Action<CancellationToken>? BeforeWrite { get; init; }
+        public Action? BeforeRead { get; set; }
         public Exception? WriteException { get; init; }
         public List<DashboardCacheRecord> Writes { get; } = [];
+
+        public Task<DashboardCacheReadResult> ReadLastUsedAsync(
+            DateTimeOffset now,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BeforeRead?.Invoke();
+            ReadCount++;
+            return Task.FromResult(new DashboardCacheReadResult(
+                ReadRecord,
+                new(ReadRecord is null
+                    ? DashboardCacheDiagnosticKind.Missing
+                    : DashboardCacheDiagnosticKind.Loaded, "Fixture last-used cache read.")));
+        }
 
         public Task<DashboardCacheReadResult> ReadAsync(
             DashboardCacheAccount account,
@@ -763,10 +849,16 @@ public sealed class DashboardServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            BeforeRead?.Invoke();
             ReadCount++;
+            var record = ReadRecord is { } candidate &&
+                string.Equals(candidate.Account.Host, account.Host, StringComparison.OrdinalIgnoreCase) &&
+                candidate.Account.UserId == account.UserId
+                    ? candidate
+                    : null;
             return Task.FromResult(new DashboardCacheReadResult(
-                ReadRecord,
-                new(ReadRecord is null
+                record,
+                new(record is null
                     ? DashboardCacheDiagnosticKind.Missing
                     : DashboardCacheDiagnosticKind.Loaded, "Fixture cache read.")));
         }
@@ -781,9 +873,19 @@ public sealed class DashboardServiceTests
             {
                 throw WriteException;
             }
+
             Writes.Add(record);
             return Task.FromResult(new DashboardCacheWriteResult(
                 new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
+        }
+
+        public Task<DashboardCacheWriteResult> SelectAccountAsync(
+            DashboardCacheAccount account,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new DashboardCacheWriteResult(
+                new(DashboardCacheDiagnosticKind.Written, "Fixture account selected.")));
         }
 
         public Task<DashboardCacheClearResult> ClearAsync(
