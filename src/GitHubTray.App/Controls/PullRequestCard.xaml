@@ -241,7 +241,9 @@
                                 </Style>
                             </Flyout.FlyoutPresenterStyle>
                             <!-- Header, caveat and footer stay put; only the checks scroll. -->
-                            <Grid Width="330" RowSpacing="10">
+                            <Grid x:Name="ChecksFlyoutContent" Width="330" RowSpacing="10"
+                                  x:Load="{x:Bind IsChecksFlyoutContentLoaded, Mode=OneWay}"
+                                  Loaded="ChecksFlyoutContent_Loaded">
                                 <!-- Scoped here, not on the control: a flyout's popup does not
                                      inherit resources through the card's visual tree. -->
                                 <Grid.Resources>

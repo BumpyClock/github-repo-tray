@@ -62,12 +62,14 @@ public sealed class DashboardRefreshSessionClearTests
     }
 
     [Fact]
-    public async Task ClearDrainsRefreshBeforeDisposingCancellationWhenCancellationCallbackFaults()
+    public async Task ClearDrainsRefreshAndStoreClearWhenCancellationCallbackFaults()
     {
         var cache = new MemoryDashboardCacheStore();
         await using var fixture = new RefreshSessionFixture(cache);
         await fixture.RefreshAsync();
         var finalGate = fixture.Gate(ignoreCancellation: true);
+        var clearGate = fixture.Gate();
+        cache.ClearGate = clearGate;
         var responses = RefreshResponses.Success(revision: "obsolete");
         responses.FinalUser = responses.FinalUser with
         {
@@ -75,21 +77,33 @@ public sealed class DashboardRefreshSessionClearTests
             ObserveCancellation = token =>
                 token.Register(() => throw new InvalidOperationException("Injected callback failure"))
         };
-        fixture.Api.Use(responses);
+        fixture.Api.Use(responses, RefreshResponses.Success(revision: "post-clear"));
         var refresh = fixture.Session.RefreshAsync(DashboardRefreshReason.Periodic);
         await finalGate.EnteredAsync();
 
         var clear = fixture.Session.ClearCacheAsync();
         await finalGate.CanceledAsync();
+        await clearGate.EnteredAsync();
         Assert.NotSame(clear, await Task.WhenAny(clear, Task.Delay(200)));
 
         finalGate.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
+        Assert.False(clear.IsCompleted);
+        var requestsBeforePostClear = fixture.Api.Requests.Length;
+        var manual = fixture.Session.RefreshAsync(DashboardRefreshReason.Manual);
+        Assert.False(manual.IsCompleted);
+        Assert.Equal(requestsBeforePostClear, fixture.Api.Requests.Length);
+
+        clearGate.Release();
         var result = await clear.WaitAsync(RefreshSessionFixture.Timeout);
+        await manual.WaitAsync(RefreshSessionFixture.Timeout);
 
         Assert.False(result.Succeeded);
+        Assert.Contains("could not be canceled cleanly", result.Diagnostic.Message);
         Assert.False(fixture.Session.State.IsRefreshing);
-        Assert.Equal(0, cache.RecordCount);
+        Assert.Equal(8, fixture.Api.Requests.Length - requestsBeforePostClear);
+        Assert.Equal(1, cache.RecordCount);
+        Assert.Equal("post-clear", Assert.Single(cache.LastWrite!.Activity!.Items).Id);
     }
 
     [Fact]

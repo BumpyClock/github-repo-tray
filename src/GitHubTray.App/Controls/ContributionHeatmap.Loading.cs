@@ -22,6 +22,7 @@ public sealed partial class ContributionHeatmap
     private Storyboard? _shimmer;
     private int _shimmerFirstVisibleWeek;
     private bool _panelVisible = true;
+    private bool _plotInvalidated = true;
 
     public bool IsLoading
     {
@@ -44,7 +45,7 @@ public sealed partial class ContributionHeatmap
         }
         if (!control.ViewModel.HasDays)
         {
-            control.RebuildPlot();
+            control.TryRebuildPlot();
         }
         else
         {
@@ -63,7 +64,7 @@ public sealed partial class ContributionHeatmap
             if (control.IsActive)
             {
                 // Let the parent's visibility binding finish before restoring the viewport.
-                control.DispatcherQueue.TryEnqueue(control.ApplyViewport);
+                control.DispatcherQueue.TryEnqueue(control.EnsurePlotCurrent);
             }
             control.UpdateShimmer();
         }
@@ -74,9 +75,12 @@ public sealed partial class ContributionHeatmap
         _panelVisible = visible;
         if (!visible)
         {
-            CloseSelectionTooltip();
+            ReleasePlotVisuals();
         }
-        UpdateShimmer();
+        else
+        {
+            EnsurePlotCurrent();
+        }
     }
 
     private void Heatmap_Loaded(object sender, RoutedEventArgs args)
@@ -86,7 +90,7 @@ public sealed partial class ContributionHeatmap
             _uiSettings.AnimationsEnabledChanged += MotionSettingsChanged;
         }
         _uiSettings.ColorValuesChanged += MotionSettingsChanged;
-        RebuildPlot();
+        EnsurePlotCurrent();
     }
 
     private void Heatmap_Unloaded(object sender, RoutedEventArgs args)
@@ -103,6 +107,64 @@ public sealed partial class ContributionHeatmap
 
     private void MotionSettingsChanged(UISettings sender, object args) =>
         DispatcherQueue.TryEnqueue(UpdateShimmer);
+
+    // DashboardViewModel publishes the latest hidden snapshot immediately before this
+    // control is made visible. Setters mark the plot dirty until that reveal callback.
+    private bool CanRealizePlot => IsLoaded && _panelVisible && IsActive;
+
+    private bool TryRebuildPlot()
+    {
+        _plotInvalidated = true;
+        if (!CanRealizePlot)
+        {
+            StopShimmer();
+            return false;
+        }
+
+        RebuildPlot();
+        return true;
+    }
+
+    private void EnsurePlotCurrent()
+    {
+        if (!CanRealizePlot)
+        {
+            StopShimmer();
+            return;
+        }
+
+        if (_plotInvalidated)
+        {
+            RebuildPlot();
+            SynchronizeSelection(ViewModel.SelectIndex(ViewModel.SelectedIndex), announce: false);
+        }
+        else
+        {
+            ApplyViewport();
+            UpdateShimmer();
+        }
+    }
+
+    private void ReleasePlotVisuals()
+    {
+        if (_plotInvalidated && CalendarGrid.Children.Count == 0)
+        {
+            return;
+        }
+
+        CloseSelectionTooltip();
+        _pendingAnchor ??= CaptureViewport();
+        StopShimmer();
+        _skeletonCells.Clear();
+        CalendarGrid.Children.Clear();
+        CalendarGrid.ColumnDefinitions.Clear();
+        CalendarGrid.Width = 0;
+        SelectionOutline.Visibility = Visibility.Collapsed;
+        GraphPlaceholder.Visibility = Visibility.Collapsed;
+        _plotWeekCount = 0;
+        _appliedViewport = null;
+        _plotInvalidated = true;
+    }
 
     private void RebuildPlot()
     {
@@ -154,6 +216,7 @@ public sealed partial class ContributionHeatmap
         GraphPlaceholder.Visibility = ViewModel.HasDays || IsLoading ? Visibility.Collapsed : Visibility.Visible;
         ApplyViewport();
         UpdateShimmer();
+        _plotInvalidated = false;
     }
 
     private void UpdateShimmer()

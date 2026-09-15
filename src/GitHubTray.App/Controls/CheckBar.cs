@@ -20,6 +20,10 @@ public sealed partial class CheckBar : Panel
 
     private static readonly AccessibilitySettings Accessibility = new();
 
+    private int[] _weights = [];
+    private double[] _distributedWidths = [];
+    private double _distributedForWidth = double.NaN;
+
     public static readonly DependencyProperty SegmentsProperty = DependencyProperty.Register(
         nameof(Segments), typeof(IReadOnlyList<CheckBarSegment>), typeof(CheckBar),
         new PropertyMetadata(null, OnSegmentsChanged));
@@ -49,13 +53,17 @@ public sealed partial class CheckBar : Panel
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var weights = Segments is null ? [] : Segments.Select(segment => segment.Weight).ToArray();
-        var widths = CheckBarLayout.Distribute(weights, finalSize.Width);
-        double x = 0;
-        for (var index = 0; index < Children.Count && index < widths.Length; index++)
+        if (_distributedForWidth != finalSize.Width)
         {
-            Children[index].Arrange(new Rect(x, 0, widths[index], finalSize.Height));
-            x += widths[index] + CheckBarLayout.SegmentSpacing;
+            _distributedWidths = CheckBarLayout.Distribute(_weights, finalSize.Width);
+            _distributedForWidth = finalSize.Width;
+        }
+
+        double x = 0;
+        for (var index = 0; index < Children.Count && index < _distributedWidths.Length; index++)
+        {
+            Children[index].Arrange(new Rect(x, 0, _distributedWidths[index], finalSize.Height));
+            x += _distributedWidths[index] + CheckBarLayout.SegmentSpacing;
         }
         return finalSize;
     }
@@ -63,6 +71,9 @@ public sealed partial class CheckBar : Panel
     private void Rebuild()
     {
         Children.Clear();
+        _weights = Segments is null ? [] : Segments.Select(segment => segment.Weight).ToArray();
+        _distributedWidths = [];
+        _distributedForWidth = double.NaN;
         if (Segments is null) return;
         foreach (var segment in Segments) Children.Add(CreateRun(segment));
         InvalidateMeasure();

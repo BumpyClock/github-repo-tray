@@ -50,8 +50,9 @@ streaming CI feed. The API returns at most 30
 authored PRs or review requests, 10 labels and 100 check contexts per PR, including
 legacy commit statuses. Truncated lists disclose the total instead of claiming
 exact progress.
-The visible CI summary is prepared with each card; individual check-detail rows
-are created only when you open its checks flyout and reused for that snapshot.
+The visible CI summary is prepared with each card; the checks flyout's content
+and individual check-detail rows are created only when opened and reused for that
+snapshot. Recycled cards release their previous popup content and avatar.
 Activity groups the latest 30 returned events, so it can contain fewer than 30
 cards; its event count is for that fetched window, not the PR's entire timeline.
 One bounded GraphQL batch loads current details for the PRs referenced by those
@@ -184,7 +185,11 @@ ID, eligible retained sections for that account are published with **Cached from
 timestamps while the normal live section requests continue. The final identity
 check and GraphQL viewer checks still gate the replacement live snapshot.
 Subsequent tray opens use the current verified in-memory snapshot, with periodic
-refresh continuing while the panel is hidden.
+refresh continuing while the panel is hidden. Hidden refreshes update the session
+without rebuilding bound dashboard rows; reopening projects the latest session
+state before showing the panel. Unchanged sections retain their existing rows.
+The heatmap also defers visual rebuilding while Preferences is open. Startup
+freshness and Preferences share one settings-file read.
 
 The dashboard cache lives under the app's user-local data folder in a
 `dashboard-cache` directory, separate from `settings.json`. Records are
@@ -320,6 +325,30 @@ subprocess. No live cold/warm GitHub timing was measured for this change, so no
 runtime speedup is claimed.
 CI also checks the native published executable and reruns the JSON persistence tests with
 `-p:JsonSerializerIsReflectionEnabledByDefault=false` to catch reflection regressions.
+
+### Memory measurements
+
+Hiding the panel keeps its native window and dashboard available for reopening;
+it does not unload WinUI or stop scheduled GitHub refreshes. A nonzero hidden
+footprint is therefore expected and is not, by itself, evidence of a leak.
+Compare the same architecture and build configuration: Debug includes the
+managed runtime and JIT, while a NativeAOT **publish** does not.
+
+After the dashboard finishes loading, hide it and sample its PID:
+
+```powershell
+.\scripts\Measure-IdleFootprint.ps1 -AppPid <PID> -OutputPath .\artifacts\idle-memory.json
+```
+
+The script records 15 samples two seconds apart, with median/minimum/maximum
+private working set, total working set, private committed bytes, and CPU time.
+Private working set measures resident memory unique to this process; total
+working set also includes shared pages. Private committed bytes need not all be
+resident. These are different metrics, not interchangeable RAM totals.
+The script only observes the selected process; it does not hide the panel,
+force garbage collection, trim memory, or change refresh settings. Use the same
+account, selected tab, cache state, warmup, and hide/show sequence when comparing
+builds, and allow a scheduled refresh cycle when investigating background work.
 
 For native selection checks, open the running tray panel with a loaded calendar:
 

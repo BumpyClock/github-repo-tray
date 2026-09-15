@@ -176,6 +176,116 @@ public sealed class DashboardCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public void InactivePrunePageIsBoundedAndEventuallyCoversAStableDirectory()
+    {
+        var candidates = Enumerable.Range(2, 19)
+            .Select(userId => Path.Combine(_directory, $"{userId}.json"))
+            .ToArray();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cursor = 0;
+
+        for (var pageIndex = 0; pageIndex < 3; pageIndex++)
+        {
+            var page = JsonDashboardCacheStore.SelectInactivePrunePage(
+                candidates,
+                cursor,
+                CancellationToken.None,
+                out cursor);
+            Assert.InRange(page.Length, 1, JsonDashboardCacheStore.InactiveRecordCleanupLimit);
+            seen.UnionWith(page);
+        }
+
+        Assert.Equal(0, cursor);
+        Assert.Equal(candidates.Length, seen.Count);
+        Assert.All(candidates, candidate => Assert.Contains(candidate, seen));
+    }
+
+    [Fact]
+    public void InactivePrunePageStopsAtTheBoundAndObservesCancellationWhileEnumerating()
+    {
+        var enumerated = 0;
+        IEnumerable<string> CountedCandidates()
+        {
+            for (var index = 0; index < 10_000; index++)
+            {
+                enumerated++;
+                yield return Path.Combine(_directory, $"{index + 2}.json");
+            }
+        }
+
+        var page = JsonDashboardCacheStore.SelectInactivePrunePage(
+            CountedCandidates(),
+            0,
+            CancellationToken.None,
+            out var cursor);
+
+        Assert.Equal(JsonDashboardCacheStore.InactiveRecordCleanupLimit, page.Length);
+        Assert.Equal(JsonDashboardCacheStore.InactiveRecordCleanupLimit, enumerated);
+        Assert.Equal(JsonDashboardCacheStore.InactiveRecordCleanupLimit, cursor);
+
+        enumerated = 0;
+        using var cancellation = new CancellationTokenSource();
+        IEnumerable<string> CancelingCandidates()
+        {
+            for (var index = 0; index < 10_000; index++)
+            {
+                enumerated++;
+                if (enumerated == 4)
+                {
+                    cancellation.Cancel();
+                }
+                yield return Path.Combine(_directory, $"{index + 2}.json");
+            }
+        }
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = JsonDashboardCacheStore.SelectInactivePrunePage(
+                CancelingCandidates(),
+                0,
+                cancellation.Token,
+                out _);
+        });
+        Assert.Equal(4, enumerated);
+    }
+
+    [Fact]
+    public void InactivePruneCancellationIsObservedAcrossALongNonOwnedPrefix()
+    {
+        var activeFilePath = Path.Combine(_directory, "1.json");
+        var enumerated = 0;
+        using var cancellation = new CancellationTokenSource();
+        IEnumerable<string> RawPaths()
+        {
+            for (var index = 0; index < 10_000; index++)
+            {
+                enumerated++;
+                if (enumerated == 100)
+                {
+                    cancellation.Cancel();
+                }
+                yield return Path.Combine(_directory, $"unrelated-{index}.txt");
+            }
+            yield return Path.Combine(_directory, "2.json");
+        }
+
+        var candidates = JsonDashboardCacheStore.EnumerateInactiveOwnedFiles(
+            RawPaths(),
+            activeFilePath,
+            cancellation.Token);
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = JsonDashboardCacheStore.SelectInactivePrunePage(
+                candidates,
+                0,
+                cancellation.Token,
+                out _);
+        });
+        Assert.Equal(100, enumerated);
+    }
+
+    [Fact]
     public async Task MalformedIncompatibleAndInterruptedFilesAreExplicitMisses()
     {
         var store = new JsonDashboardCacheStore(_directory);

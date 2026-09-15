@@ -60,6 +60,7 @@ public sealed partial class SectionViewModel : ObservableObject
 {
     private readonly Symbol _icon;
     private readonly bool _isRepositoryFirst;
+    private DashboardSection? _projectedSection;
 
     public SectionViewModel(string title, string emptyMessage, Symbol icon, bool isRepositoryFirst = false)
     {
@@ -84,6 +85,7 @@ public sealed partial class SectionViewModel : ObservableObject
 
     public void Clear()
     {
+        _projectedSection = null;
         if (Items.Count != 0)
         {
             Items.Clear();
@@ -95,12 +97,19 @@ public sealed partial class SectionViewModel : ObservableObject
 
     public void Update(DashboardSection section)
     {
+        if (DashboardSectionProjection.IsEquivalent(_projectedSection, section))
+        {
+            _projectedSection = section;
+            return;
+        }
+
         Items.Clear();
         foreach (var item in section.Items)
         {
             Items.Add(new DashboardRow(item, _icon, _isRepositoryFirst, isStale: section.Error is not null));
         }
 
+        _projectedSection = section;
         Error = section.Error ?? "";
         UpdatedLabel = section.UpdatedAt is not { } updated
             ? section.Source == DashboardSectionSource.Missing
@@ -126,6 +135,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private readonly DispatcherQueueTimer _refreshTimer;
     private readonly DispatcherQueueTimer _clockTimer;
     private readonly DashboardPresentationClock _presentationClock;
+    private readonly DashboardStateProjection<DashboardSessionState> _stateProjection;
     private readonly DispatcherQueueTimer _preferenceSaveTimer;
     private readonly CancellationTokenSource _lifetime = new();
     // Last UI projection, never recovery data; the session owns publication eligibility.
@@ -135,6 +145,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private Task? _clearCacheTask;
     private Task? _shutdownTask;
     private AppSettings _committedSettings = new();
+    private DashboardSnapshot? _cacheInvalidatedSnapshot;
     private ContributionCellSizePreset _contributionCellSize = ContributionCellSizePreset.Medium;
     private int? _pendingRefreshMinutes;
     private bool _isPreferenceSaveReady;
@@ -142,11 +153,12 @@ public sealed partial class DashboardViewModel : ObservableObject
     private string _settingsSaveWarning = "";
     private bool _isShuttingDown;
 
-    internal DashboardViewModel(DashboardStartup startup, SettingsStore settingsStore, DispatcherQueue dispatcher)
+    internal DashboardViewModel(DashboardStartup startup, DispatcherQueue dispatcher)
     {
         _startup = startup;
         _refreshSession = startup.Session;
-        _settingsStore = settingsStore;
+        _settingsStore = startup.SettingsStore;
+        _stateProjection = new(ApplyRefreshStateCore);
         Sections =
         [
             new("Activity", "No recent activity returned for this account.", Symbol.Clock, isRepositoryFirst: true),
@@ -372,14 +384,14 @@ public sealed partial class DashboardViewModel : ObservableObject
     private void ApplyStartupState(DashboardSessionState state)
     {
         if (!_isShuttingDown)
-            ApplyRefreshState(state);
+            PublishRefreshState(state);
     }
 
     private async Task InitializeSettingsAsync()
     {
         try
         {
-            var settings = await _settingsStore.LoadAsync(_lifetime.Token);
+            var settings = await _startup.SettingsTask.WaitAsync(_lifetime.Token);
             settings.Validate();
             _committedSettings = settings;
             _refreshSession.SetRefreshInterval(TimeSpan.FromMinutes(settings.RefreshMinutes));
@@ -387,7 +399,7 @@ public sealed partial class DashboardViewModel : ObservableObject
             RefreshMinutesText = settings.RefreshMinutes.ToString(CultureInfo.InvariantCulture);
             _canAutoSaveSettings = true;
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || _isShuttingDown)
         {
             return;
         }
@@ -426,22 +438,43 @@ public sealed partial class DashboardViewModel : ObservableObject
         try
         {
             var refreshTask = _refreshSession.RefreshAsync(reason);
-            ApplyRefreshState(_refreshSession.State);
+            PublishRefreshState(_refreshSession.State);
             await refreshTask;
         }
         finally
         {
             if (!_isShuttingDown)
             {
-                ApplyRefreshState(_refreshSession.State);
+                PublishRefreshState(_refreshSession.State);
             }
         }
     }
 
-    private void ApplyRefreshState(DashboardSessionState state)
+    private void PublishRefreshState(DashboardSessionState state)
+    {
+        _stateProjection.Publish(PrepareRefreshState(state));
+    }
+
+    private DashboardSessionState PrepareRefreshState(DashboardSessionState state)
+    {
+        if (_cacheInvalidatedSnapshot is not null &&
+            (state.IsRefreshing ||
+             !ReferenceEquals(_cacheInvalidatedSnapshot, state.Snapshot)))
+        {
+            _cacheInvalidatedSnapshot = null;
+        }
+
+        return state;
+    }
+
+    private void ApplyRefreshStateCore(DashboardSessionState state)
     {
         if (state.Snapshot is { } snapshot)
         {
+            var showCacheInvalidated =
+                !state.IsRefreshing &&
+                ReferenceEquals(_cacheInvalidatedSnapshot, snapshot);
+
             if (!ReferenceEquals(_lastProjectedSnapshot, snapshot))
             {
                 Sections[0].Update(snapshot.Activity);
@@ -458,11 +491,16 @@ public sealed partial class DashboardViewModel : ObservableObject
             AccountDescription = DashboardSnapshotPresentation.AccountDescription(
                 snapshot,
                 state.IsRefreshing);
+            if (showCacheInvalidated)
+            {
+                AccountDescription = "The displayed dashboard remains available, but its reusable cached data was invalidated. The next refresh fetches every section.";
+            }
             IsAccountVerified = true;
         }
         else
         {
             IsAccountVerified = false;
+            _cacheInvalidatedSnapshot = null;
             _lastProjectedSnapshot = null;
             foreach (var section in Sections)
             {
@@ -538,11 +576,11 @@ public sealed partial class DashboardViewModel : ObservableObject
                 var presentation = DashboardCacheClearPresentation.Create(result);
                 CacheClearStatus = presentation.Status;
                 CacheClearWarning = presentation.Warning;
-                ApplyRefreshState(_refreshSession.State);
-                if (_refreshSession.State is { Snapshot: not null, IsRefreshing: false })
-                {
-                    AccountDescription = "The displayed dashboard remains available, but its reusable cached data was invalidated. The next refresh fetches every section.";
-                }
+                _cacheInvalidatedSnapshot =
+                    _refreshSession.State is { Snapshot: { } snapshot, IsRefreshing: false }
+                        ? snapshot
+                        : null;
+                PublishRefreshState(_refreshSession.State);
             }
         }
         finally
@@ -672,7 +710,18 @@ public sealed partial class DashboardViewModel : ObservableObject
     private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) =>
         await RefreshWithReasonAsync(DashboardRefreshReason.Periodic);
 
-    public void SetPanelVisible(bool isVisible) => _presentationClock.SetVisible(isVisible);
+    public void SetPanelVisible(bool isVisible)
+    {
+        if (isVisible)
+        {
+            _stateProjection.Reveal(() => PrepareRefreshState(_refreshSession.State));
+        }
+        else
+        {
+            _stateProjection.Hide();
+        }
+        _presentationClock.SetVisible(isVisible);
+    }
 
     private void OnClockTimerTick(DispatcherQueueTimer sender, object args) => _presentationClock.Tick();
 
@@ -708,7 +757,8 @@ public sealed partial class DashboardViewModel : ObservableObject
         try
         {
             var refreshShutdownTask = _startup.DisposeAsync().AsTask();
-            ApplyRefreshState(_refreshSession.State);
+            _cacheInvalidatedSnapshot = null;
+            _stateProjection.Stop(_refreshSession.State);
             try
             {
                 _isPreferenceSaveReady = true;

@@ -13,14 +13,64 @@ public sealed class DashboardStartupTests
     public void SecondaryLaunchDoesNotEvenConstructARefreshSession()
     {
         var sessionCreations = 0;
-        var startup = DashboardStartup.StartIfPrimary(false, () =>
+        var startup = DashboardStartup.StartIfPrimary(false, _ =>
         {
             sessionCreations++;
-            return new DashboardRefreshSession(new DashboardService(new StartupApi()));
+            return Resources(new DashboardRefreshSession(new DashboardService(new StartupApi())));
         });
 
         Assert.Null(startup);
         Assert.Equal(0, sessionCreations);
+    }
+
+    [Fact]
+    public async Task PrimaryStartupSharesAndOwnsOneSettingsTask()
+    {
+        var settingsStore = new SettingsStore(Path.Combine(
+            Path.GetTempPath(), "GitHubTray.App.Tests", Guid.NewGuid().ToString("N"), "settings.json"));
+        var settingsStarted = Signal();
+        var settingsCancelled = Signal();
+        Task<AppSettings>? settingsTask = null;
+        var startup = DashboardStartup.StartIfPrimary(true, cancellationToken =>
+        {
+            settingsTask = LoadSettingsAsync(cancellationToken);
+            return new(
+                new DashboardRefreshSession(
+                    new DashboardService(new StartupApi()),
+                    startupRefreshInterval:
+                        DashboardStartupSettings.ResolveRefreshIntervalAsync(settingsTask)),
+                settingsStore,
+                settingsTask);
+        })!;
+        try
+        {
+            await settingsStarted.Task.WaitAsync(Timeout);
+
+            Assert.Same(settingsStore, startup.SettingsStore);
+            Assert.Same(settingsTask, startup.SettingsTask);
+        }
+        finally
+        {
+            await startup.DisposeAsync();
+        }
+        Assert.True(settingsCancelled.Task.IsCompleted);
+
+        async Task<AppSettings> LoadSettingsAsync(CancellationToken cancellationToken)
+        {
+            settingsStarted.TrySetResult();
+            try
+            {
+                await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+                return new AppSettings();
+            }
+            finally
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    settingsCancelled.TrySetResult();
+                }
+            }
+        }
     }
 
     [Fact]
@@ -176,9 +226,9 @@ public sealed class DashboardStartupTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var api = new StartupApi { AreSectionsBlocked = true };
         await using var startup = DashboardStartup.StartIfPrimary(true,
-            () => new DashboardRefreshSession(
+            _ => Resources(new DashboardRefreshSession(
                 new DashboardService(api, cache, clock),
-                startupRefreshInterval: interval.Task))!;
+                startupRefreshInterval: interval.Task)))!;
 
         var window = new object();
         Assert.Same(window, await startup.CreateWindowAsync(_ => window));
@@ -278,10 +328,10 @@ public sealed class DashboardStartupTests
         };
         var api = new StartupApi();
         await using var startup = DashboardStartup.StartIfPrimary(true,
-            () => new DashboardRefreshSession(
+            _ => Resources(new DashboardRefreshSession(
                 new DashboardService(api, timeProvider: clock),
                 seed,
-                TimeSpan.FromMinutes(5)))!;
+                TimeSpan.FromMinutes(5))))!;
 
         await startup.RefreshTask.WaitAsync(Timeout);
         var originalTask = startup.RefreshTask;
@@ -405,7 +455,14 @@ public sealed class DashboardStartupTests
         StartupApi api,
         IDashboardCacheStore? cacheStore = null) =>
         DashboardStartup.StartIfPrimary(true,
-            () => new DashboardRefreshSession(new DashboardService(api, cacheStore)))!;
+            _ => Resources(new DashboardRefreshSession(new DashboardService(api, cacheStore))))!;
+
+    private static DashboardStartupResources Resources(DashboardRefreshSession session)
+    {
+        var settings = new SettingsStore(Path.Combine(
+            Path.GetTempPath(), "GitHubTray.App.Tests", Guid.NewGuid().ToString("N"), "settings.json"));
+        return new(session, settings, Task.FromResult(new AppSettings()));
+    }
 
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 

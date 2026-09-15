@@ -293,6 +293,30 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     }
 
     [Theory]
+    [InlineData("rate ", "LIMIT", "user", RateLimitError)]
+    [InlineData("HTTP ", "429", "user", RateLimitError)]
+    [InlineData("HTTP ", "401", "user", AuthenticationError)]
+    [InlineData("auth ", "login", "user", AuthenticationError)]
+    [InlineData("authent", "ication", "user", AuthenticationError)]
+    [InlineData("Bad cred", "entials", "user", AuthenticationError)]
+    [InlineData("HTTP ", "403", "user", "GitHub denied access. Check your account, repository permissions, and organization SSO authorization in gh.")]
+    [InlineData("HTTP ", "403", CopilotUsageParser.Endpoint, "Copilot usage is not accessible to the current gh account. Check its Copilot plan and organization access. Copilot CLI may use a different account; GitHub Tray does not read its credentials.")]
+    [InlineData("HTTP ", "404", CopilotUsageParser.Endpoint, "Copilot usage is not accessible to the current gh account. Check its Copilot plan and organization access. Copilot CLI may use a different account; GitHub Tray does not read its credentials.")]
+    public async Task FailureTokensSplitAcrossStderrReadsAreClassifiedWithoutExposingDiagnostics(
+        string first, string second, string endpoint, string expected)
+    {
+        var api = CreateChunkedErrorApi(
+            $"{SensitiveDiagnostic}\n{first}",
+            $"{second}\n{SensitiveDiagnostic}");
+
+        var error = await Assert.ThrowsAsync<GitHubException>(() => api.GetAsync(endpoint));
+
+        Assert.Equal(expected, error.Message);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain(SensitiveDiagnostic, error.ToString());
+    }
+
+    [Theory]
     [InlineData("large-stderr-first")]
     [InlineData("large-stdout-first")]
     public async Task BothOutputPipesAreDrainedWithoutDeadlock(string mode)
@@ -376,6 +400,16 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
         info.Environment["GITHUB_TRAY_FIXTURE_STDOUT"] = stdout;
         info.Environment["GITHUB_TRAY_FIXTURE_STDERR"] = stderr;
         info.Environment["GITHUB_TRAY_FIXTURE_EXIT_CODE"] = exitCode.ToString();
+        return info;
+    }, TimeSpan.FromSeconds(15));
+
+    private GitHubCliApi CreateChunkedErrorApi(string first, string second) => new(() =>
+    {
+        var info = fixture.CreateStartInfo("chunked-stderr");
+        info.Environment["GITHUB_TRAY_FIXTURE_STDOUT"] = SensitiveDiagnostic;
+        info.Environment["GITHUB_TRAY_FIXTURE_STDERR_FIRST"] = first;
+        info.Environment["GITHUB_TRAY_FIXTURE_STDERR_SECOND"] = second;
+        info.Environment["GITHUB_TRAY_FIXTURE_EXIT_CODE"] = "1";
         return info;
     }, TimeSpan.FromSeconds(15));
 

@@ -67,8 +67,10 @@ public sealed partial class ContributionHeatmap : UserControl
     {
         CloseSelectionTooltip();
         var change = ViewModel.UpdateCalendar(calendar);
-        RebuildPlot();
-        SynchronizeSelection(change, announce: false);
+        if (TryRebuildPlot())
+        {
+            SynchronizeSelection(change, announce: false);
+        }
     }
 
     protected override void OnKeyDown(KeyRoutedEventArgs args)

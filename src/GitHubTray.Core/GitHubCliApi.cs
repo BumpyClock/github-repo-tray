@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
@@ -7,6 +8,18 @@ namespace GitHubTray.Core;
 
 public sealed class GitHubCliApi : IGitHubApi
 {
+    [Flags]
+    private enum FailureSignals
+    {
+        None = 0,
+        RateLimit = 1 << 0,
+        Authentication = 1 << 1,
+        Forbidden = 1 << 2,
+        NotFound = 1 << 3
+    }
+
+    private const int ErrorReadBufferSize = 4096;
+    private const int FailurePatternOverlap = 15 - 1; // "Bad credentials" is the longest classified token.
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(30);
     private readonly Func<ProcessStartInfo> _createStartInfo;
     private readonly TimeSpan _requestTimeout;
@@ -86,7 +99,7 @@ public sealed class GitHubCliApi : IGitHubApi
         }
 
         var outputTask = process.StandardOutput.ReadToEndAsync();
-        var errorTask = process.StandardError.ReadToEndAsync();
+        var failureSignalsTask = ReadFailureSignalsAsync(process.StandardError);
         try
         {
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
@@ -105,19 +118,67 @@ public sealed class GitHubCliApi : IGitHubApi
                 // The child can exit between HasExited and Kill.
             }
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            await Task.WhenAll(outputTask, errorTask).ConfigureAwait(false);
+            await Task.WhenAll(outputTask, failureSignalsTask).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             throw new GitHubException("GitHub did not respond within 30 seconds. Check your connection and refresh again.");
         }
 
         var output = await outputTask.ConfigureAwait(false);
-        var error = await errorTask.ConfigureAwait(false);
+        var failureSignals = await failureSignalsTask.ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
             // CLI stderr may contain sensitive diagnostics. Only expose known, fixed messages.
-            throw new GitHubException(DescribeFailure(error, endpoint));
+            throw new GitHubException(DescribeFailure(failureSignals, endpoint));
         }
         return output;
+    }
+
+    private static async Task<FailureSignals> ReadFailureSignalsAsync(StreamReader error)
+    {
+        var buffer = ArrayPool<char>.Shared.Rent(ErrorReadBufferSize + FailurePatternOverlap);
+        var carried = 0;
+        var signals = FailureSignals.None;
+        try
+        {
+            while (true)
+            {
+                var read = await error.ReadAsync(buffer.AsMemory(carried, ErrorReadBufferSize))
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return signals;
+                }
+
+                var contents = buffer.AsSpan(0, carried + read);
+                if (contents.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+                    contents.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase))
+                {
+                    signals |= FailureSignals.RateLimit;
+                }
+                if (contents.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase) ||
+                    contents.Contains("auth login", StringComparison.OrdinalIgnoreCase) ||
+                    contents.Contains("authentication", StringComparison.OrdinalIgnoreCase) ||
+                    contents.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase))
+                {
+                    signals |= FailureSignals.Authentication;
+                }
+                if (contents.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase))
+                {
+                    signals |= FailureSignals.Forbidden;
+                }
+                if (contents.Contains("HTTP 404", StringComparison.OrdinalIgnoreCase))
+                {
+                    signals |= FailureSignals.NotFound;
+                }
+
+                carried = Math.Min(FailurePatternOverlap, contents.Length);
+                contents[^carried..].CopyTo(buffer);
+            }
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+        }
     }
 
     private static void ValidateQuery(string query)
@@ -170,27 +231,23 @@ public sealed class GitHubCliApi : IGitHubApi
         }
     }
 
-    private static string DescribeFailure(string error, string endpoint)
+    private static string DescribeFailure(FailureSignals signals, string endpoint)
     {
-        if (error.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
-            error.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase))
+        if (signals.HasFlag(FailureSignals.RateLimit))
         {
             return "GitHub's API rate limit was reached. Wait before refreshing; previously loaded data is retained.";
         }
-        if (error.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase) ||
-            error.Contains("auth login", StringComparison.OrdinalIgnoreCase) ||
-            error.Contains("authentication", StringComparison.OrdinalIgnoreCase) ||
-            error.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase))
+        if (signals.HasFlag(FailureSignals.Authentication))
         {
             return "GitHub sign-in is unavailable or expired. Run 'gh auth login --hostname github.com' in a terminal, then refresh.";
         }
         if (endpoint == CopilotUsageParser.Endpoint &&
-            (error.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase) ||
-             error.Contains("HTTP 404", StringComparison.OrdinalIgnoreCase)))
+            (signals.HasFlag(FailureSignals.Forbidden) ||
+             signals.HasFlag(FailureSignals.NotFound)))
         {
             return "Copilot usage is not accessible to the current gh account. Check its Copilot plan and organization access. Copilot CLI may use a different account; GitHub Tray does not read its credentials.";
         }
-        if (error.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase))
+        if (signals.HasFlag(FailureSignals.Forbidden))
         {
             return "GitHub denied access. Check your account, repository permissions, and organization SSO authorization in gh.";
         }

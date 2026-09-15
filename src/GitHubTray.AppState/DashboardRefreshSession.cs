@@ -429,11 +429,19 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         TaskCompletionSource<DashboardCacheClearResult> completion)
     {
         DashboardCacheClearResult result;
+        Exception? cancellationFailure = null;
         try
         {
             var cancellation = refreshCancellation?.CancelAsync() ?? Task.CompletedTask;
             var clearing = _service.ClearCacheAsync(_lifetime.Token);
-            await cancellation.ConfigureAwait(false);
+            try
+            {
+                await cancellation.ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                cancellationFailure = exception;
+            }
             try
             {
                 await refreshTask.ConfigureAwait(false);
@@ -443,6 +451,17 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                 // The refresh task remains observable by its original callers; clearing is independent.
             }
             result = await clearing.ConfigureAwait(false);
+            if (cancellationFailure is not null)
+            {
+                result = result with
+                {
+                    Diagnostic = new(
+                        DashboardCacheDiagnosticKind.ClearFailed,
+                        result.Succeeded
+                            ? "Dashboard cache was cleared, but the in-progress refresh could not be canceled cleanly."
+                            : $"{result.Diagnostic.Message} The in-progress refresh also could not be canceled cleanly.")
+                };
+            }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -517,29 +536,67 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         }
     }
 
-    private static DashboardSnapshot FreezeSnapshot(DashboardSnapshot snapshot) =>
-        snapshot with
+    internal static DashboardSnapshot FreezeSnapshot(DashboardSnapshot snapshot)
+    {
+        var activity = FreezeSection(snapshot.Activity);
+        var pullRequests = FreezeSection(snapshot.PullRequests);
+        var reviewRequests = FreezeSection(snapshot.ReviewRequests);
+        var repositories = FreezeSection(snapshot.Repositories);
+        var contributions = FreezeContributions(snapshot.Contributions);
+        if (ReferenceEquals(activity, snapshot.Activity) &&
+            ReferenceEquals(pullRequests, snapshot.PullRequests) &&
+            ReferenceEquals(reviewRequests, snapshot.ReviewRequests) &&
+            ReferenceEquals(repositories, snapshot.Repositories) &&
+            ReferenceEquals(contributions, snapshot.Contributions))
         {
-            Activity = FreezeSection(snapshot.Activity),
-            PullRequests = FreezeSection(snapshot.PullRequests),
-            ReviewRequests = FreezeSection(snapshot.ReviewRequests),
-            Repositories = FreezeSection(snapshot.Repositories),
-            Contributions = snapshot.Contributions with
-            {
-                Calendar = snapshot.Contributions.Calendar is { } calendar
-                    ? calendar with
-                    {
-                        Weeks = calendar.Weeks.Select(week => week with
-                        {
-                            Days = week.Days.ToImmutableArray()
-                        }).ToImmutableArray()
-                    }
-                    : null
-            }
+            return snapshot;
+        }
+
+        return snapshot with
+        {
+            Activity = activity,
+            PullRequests = pullRequests,
+            ReviewRequests = reviewRequests,
+            Repositories = repositories,
+            Contributions = contributions
         };
+    }
 
     private static DashboardSection FreezeSection(DashboardSection section) =>
-        section with { Items = section.Items.ToImmutableArray() };
+        section.Items is ImmutableArray<DashboardItem>
+            ? section
+            : section with { Items = section.Items.ToImmutableArray() };
+
+    private static ContributionSection FreezeContributions(ContributionSection section)
+    {
+        if (section.Calendar is not { } calendar)
+        {
+            return section;
+        }
+
+        var weeksAreImmutable = calendar.Weeks is ImmutableArray<ContributionWeek>;
+        var allDaysAreImmutable = true;
+        for (var index = 0; index < calendar.Weeks.Count; index++)
+        {
+            if (calendar.Weeks[index].Days is not ImmutableArray<ContributionDay>)
+            {
+                allDaysAreImmutable = false;
+                break;
+            }
+        }
+
+        if (weeksAreImmutable && allDaysAreImmutable)
+        {
+            return section;
+        }
+
+        var weeks = calendar.Weeks
+            .Select(week => week.Days is ImmutableArray<ContributionDay>
+                ? week
+                : week with { Days = week.Days.ToImmutableArray() })
+            .ToImmutableArray();
+        return section with { Calendar = calendar with { Weeks = weeks } };
+    }
 
     private static bool HasSectionFailures(DashboardSnapshot snapshot) =>
         snapshot.Activity.Error is not null ||

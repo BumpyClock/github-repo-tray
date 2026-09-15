@@ -13,9 +13,12 @@ namespace GitHubTray_App.Controls;
 
 public sealed partial class PullRequestCard : UserControl
 {
+    private const int AvatarDecodePixelWidth = 96;
+
     private static readonly AccessibilitySettings Accessibility = new();
 
     private readonly PullRequestChecksFlyoutState _checksFlyoutState = new();
+    private BitmapImage? _avatarImage;
 
     public static readonly DependencyProperty DataProperty = DependencyProperty.Register(
         nameof(Data), typeof(PullRequestCardViewModel), typeof(PullRequestCard), new PropertyMetadata(null, OnDataChanged));
@@ -23,11 +26,14 @@ public sealed partial class PullRequestCard : UserControl
     public static readonly DependencyProperty ShowRepositoryProperty = DependencyProperty.Register(
         nameof(ShowRepository), typeof(bool), typeof(PullRequestCard), new PropertyMetadata(true));
 
+    public static readonly DependencyProperty IsChecksFlyoutContentLoadedProperty = DependencyProperty.Register(
+        nameof(IsChecksFlyoutContentLoaded), typeof(bool), typeof(PullRequestCard), new PropertyMetadata(false));
+
     public PullRequestCard()
     {
         InitializeComponent();
-        Loaded += (_, _) => UpdateStateAppearance();
-        Unloaded += (_, _) => ChecksFlyout.Hide();
+        Loaded += PullRequestCard_Loaded;
+        Unloaded += PullRequestCard_Unloaded;
     }
 
     public PullRequestCardViewModel? Data
@@ -40,6 +46,12 @@ public sealed partial class PullRequestCard : UserControl
     {
         get => (bool)GetValue(ShowRepositoryProperty);
         set => SetValue(ShowRepositoryProperty, value);
+    }
+
+    public bool IsChecksFlyoutContentLoaded
+    {
+        get => (bool)GetValue(IsChecksFlyoutContentLoadedProperty);
+        private set => SetValue(IsChecksFlyoutContentLoadedProperty, value);
     }
 
     public event EventHandler<PullRequestActionEventArgs>? OpenChecksRequested;
@@ -82,21 +94,61 @@ public sealed partial class PullRequestCard : UserControl
     {
         var card = (PullRequestCard)sender;
         // A recycled row must never leave a flyout acting on the old PR.
-        card._checksFlyoutState.Reset();
-        card.ChecksGroups.ItemsSource = null;
-        card.ChecksFlyout.Hide();
+        card.ResetChecksFlyout();
         card.UpdateStateAppearance();
-        card.AuthorPicture.ProfilePicture = null;
-        if (card.Data?.AuthorAvatarUrl is { } uri)
+        card.UpdateAvatar();
+    }
+
+    private void PullRequestCard_Loaded(object sender, RoutedEventArgs args)
+    {
+        UpdateStateAppearance();
+        UpdateAvatar();
+    }
+
+    private void PullRequestCard_Unloaded(object sender, RoutedEventArgs args)
+    {
+        ResetChecksFlyout();
+        ClearAvatar();
+    }
+
+    private void UpdateAvatar()
+    {
+        ClearAvatar();
+        if (!IsLoaded || Data?.AuthorAvatarUrl is not { } uri)
         {
-            var image = new BitmapImage(uri);
-            image.ImageFailed += (_, _) =>
-            {
-                if (ReferenceEquals(card.AuthorPicture.ProfilePicture, image))
-                    card.AuthorPicture.ProfilePicture = null; // PersonPicture keeps its initials.
-            };
-            card.AuthorPicture.ProfilePicture = image;
+            return;
         }
+
+        var image = new BitmapImage
+        {
+            DecodePixelWidth = AvatarDecodePixelWidth
+        };
+        image.ImageFailed += AvatarImageFailed;
+        _avatarImage = image;
+        AuthorPicture.ProfilePicture = image;
+        image.UriSource = uri;
+    }
+
+    private void ClearAvatar()
+    {
+        if (_avatarImage is not null)
+        {
+            _avatarImage.ImageFailed -= AvatarImageFailed;
+            _avatarImage = null;
+        }
+        AuthorPicture.ProfilePicture = null;
+    }
+
+    private void AvatarImageFailed(object sender, ExceptionRoutedEventArgs args)
+    {
+        if (!ReferenceEquals(sender, _avatarImage))
+        {
+            return;
+        }
+
+        _avatarImage.ImageFailed -= AvatarImageFailed;
+        _avatarImage = null;
+        AuthorPicture.ProfilePicture = null; // PersonPicture keeps its initials.
     }
 
     private void UpdateStateAppearance() =>
@@ -114,10 +166,28 @@ public sealed partial class PullRequestCard : UserControl
     private void ChecksFlyout_Opening(object? sender, object args)
     {
         _checksFlyoutState.Open(Data);
-        ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+        IsChecksFlyoutContentLoaded = true;
+        if (ChecksGroups is not null)
+        {
+            ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+        }
     }
 
+    private void ChecksFlyoutContent_Loaded(object sender, RoutedEventArgs args) =>
+        ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+
     private void ChecksFlyout_Closed(object? sender, object args) => _checksFlyoutState.Close();
+
+    private void ResetChecksFlyout()
+    {
+        _checksFlyoutState.Reset();
+        if (ChecksGroups is not null)
+        {
+            ChecksGroups.ItemsSource = null;
+        }
+        ChecksFlyout.Hide();
+        IsChecksFlyoutContentLoaded = false;
+    }
 
     private void OpenChecks_Click(object sender, RoutedEventArgs args)
     {

@@ -32,6 +32,15 @@ switch (mode)
         Console.Error.Write(new string('e', 1024 * 1024));
         return 0;
 
+    case "chunked-stderr":
+        Console.Error.Write(Environment.GetEnvironmentVariable("GITHUB_TRAY_FIXTURE_STDERR_FIRST"));
+        Console.Error.Flush();
+        await Task.Delay(100);
+        Console.Error.Write(Environment.GetEnvironmentVariable("GITHUB_TRAY_FIXTURE_STDERR_SECOND"));
+        Console.Error.Flush();
+        Console.Out.Write(Environment.GetEnvironmentVariable("GITHUB_TRAY_FIXTURE_STDOUT"));
+        return int.Parse(Environment.GetEnvironmentVariable("GITHUB_TRAY_FIXTURE_EXIT_CODE") ?? "0");
+
     case "tree":
     case "hold":
         var directory = Environment.GetEnvironmentVariable("GITHUB_TRAY_FIXTURE_DIRECTORY")!;

@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using GitHubTray.Core;
 using GitHubTray_App.Native;
 using GitHubTray_App.ViewModels;
 using Microsoft.UI.Dispatching;
@@ -10,7 +9,6 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using WinRT;
-using Windows.Storage;
 using Windows.UI.ViewManagement;
 
 namespace GitHubTray_App;
@@ -33,11 +31,7 @@ public sealed partial class MainWindow : Window
     internal MainWindow(DashboardStartup startup)
     {
         InitializeComponent();
-        var settingsFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, "settings.json");
-        ViewModel = new DashboardViewModel(
-            startup,
-            new SettingsStore(settingsFile),
-            DispatcherQueue);
+        ViewModel = new DashboardViewModel(startup, DispatcherQueue);
         _page = new MainPage(ViewModel, this);
         PageHost.Child = _page;
         var presenter = AppWindow.Presenter.As<OverlappedPresenter>();

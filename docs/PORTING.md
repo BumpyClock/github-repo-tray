@@ -87,6 +87,11 @@ refreshes, cancels and drains its active refresh, and prevents late publication.
 The App also waits for initialization and settings work before closing.
 While hidden, the panel stops only its local timestamp/countdown clock and catches
 up on reveal. Scheduled API refresh continues at the configured interval.
+Dashboard projection also waits while hidden: the latest session state is applied
+before reveal, including any identity failure that must remove old-account data.
+Unchanged section metadata and item identities retain existing presentation rows.
+Already deeply immutable session snapshots are shared instead of being recopied;
+mutable inputs are still frozen at the publication boundary.
 The repeating timer is not restarted when a refresh completes, so Activity and
 PR cadence stays tied to scheduled ticks rather than completion time. If a manual
 request overlaps an automatic cycle that reused sections, the shared flight runs
@@ -105,6 +110,9 @@ the session can publish matching retained sections before delayed live requests
 finish. The persisted refresh interval loads concurrently and is applied before
 startup Activity/PR freshness selection, without delaying that verified cached
 publication. Cache misses and identity failures do not add another identity probe.
+One settings-load task supplies both startup freshness and the window's settings
+projection. Startup owns its cancellation and observes it during failed window
+construction or shutdown.
 
 Successful dashboard sections are persisted under the app's user-local
 `dashboard-cache` directory, separate from `settings.json`. Records use
@@ -210,8 +218,11 @@ retain distinct states. PR metadata and checks are one immutable snapshot, so a
 refresh never attaches old checks to a new head commit. Each PR query verifies
 the GraphQL viewer in addition to the surrounding REST identity checks.
 Cards prepare summary text eagerly, but defer individual check-detail viewmodels
-and their list source until the checks flyout opens. Details are reused only for
-that card's snapshot and are replaced when a recycled card receives new data.
+and the flyout content tree until the checks flyout opens. Details are reused only
+for that card's snapshot; recycled or unloaded cards release their popup content
+and avatar references. The 24-DIP avatar uses a bounded 96-pixel decode rather than
+retaining a full-resolution image. Check bars reuse their distribution for an
+unchanged width and segment set.
 The CLI boundary permits only the exact generated PR operations (validated login
 or repository/number references, fixed selections and limits); arbitrary GraphQL
 arguments and mutations remain rejected. There are no per-PR fan-out requests or

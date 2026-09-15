@@ -101,6 +101,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
     private const long MaximumFileSize = 16 * 1024 * 1024;
     private readonly string _rootDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly object _inactivePruneSelectionGate = new();
     private readonly Action<string, string>? _beforeReplace;
     private readonly Action<string>? _beforeDelete;
     private long _generation;
@@ -135,7 +136,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         ValidateAccount(account);
         var operationGeneration = Volatile.Read(ref _generation);
         var filePath = GetFilePath(account);
-        var inactiveCandidates = GetInactivePruneCandidates(filePath);
+        var inactiveCandidates = GetInactivePruneCandidates(filePath, cancellationToken);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -431,43 +432,113 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
     }
 
-    private string[] GetInactivePruneCandidates(string activeFilePath)
+    private string[] GetInactivePruneCandidates(
+        string activeFilePath,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var accountDirectory = Path.GetDirectoryName(activeFilePath)!;
         if (!Directory.Exists(accountDirectory))
         {
             return [];
         }
 
-        string[] ownedFiles;
         try
         {
-            ownedFiles = Directory.EnumerateFiles(
-                    accountDirectory, "*", SearchOption.TopDirectoryOnly)
-                .Where(path =>
-                    IsOwnedCacheFile(path) &&
-                    !string.Equals(path, activeFilePath, StringComparison.OrdinalIgnoreCase))
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var candidates = EnumerateInactiveOwnedFiles(
+                Directory.EnumerateFiles(
+                    accountDirectory, "*", SearchOption.TopDirectoryOnly),
+                activeFilePath,
+                cancellationToken);
+            lock (_inactivePruneSelectionGate)
+            {
+                var selected = SelectInactivePrunePage(
+                    candidates,
+                    _inactivePruneCursor,
+                    cancellationToken,
+                    out var nextCursor);
+                _inactivePruneCursor = nextCursor;
+                return selected;
+            }
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
             return [];
         }
-        if (ownedFiles.Length <= InactiveRecordCleanupLimit)
+    }
+
+    internal static IEnumerable<string> EnumerateInactiveOwnedFiles(
+        IEnumerable<string> paths,
+        string activeFilePath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        foreach (var path in paths)
         {
-            return ownedFiles;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (IsOwnedCacheFile(path) &&
+                !string.Equals(path, activeFilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    internal static string[] SelectInactivePrunePage(
+        IEnumerable<string> candidates,
+        int cursor,
+        CancellationToken cancellationToken,
+        out int nextCursor)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        if (cursor < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cursor));
         }
 
-        var offset = Interlocked.Add(
-            ref _inactivePruneCursor, InactiveRecordCleanupLimit) - InactiveRecordCleanupLimit;
-        var start = (int)((uint)offset % (uint)ownedFiles.Length);
-        var selected = new string[InactiveRecordCleanupLimit];
-        for (var index = 0; index < selected.Length; index++)
+        var selected = TakeInactivePrunePage(
+            candidates, cursor, cancellationToken);
+        var effectiveCursor = cursor;
+        if (selected.Length == 0 && cursor != 0)
         {
-            selected[index] = ownedFiles[(start + index) % ownedFiles.Length];
+            effectiveCursor = 0;
+            selected = TakeInactivePrunePage(
+                candidates, effectiveCursor, cancellationToken);
         }
+
+        nextCursor = selected.Length == InactiveRecordCleanupLimit &&
+                     effectiveCursor <= int.MaxValue - InactiveRecordCleanupLimit
+            ? effectiveCursor + InactiveRecordCleanupLimit
+            : 0;
         return selected;
+    }
+
+    private static string[] TakeInactivePrunePage(
+        IEnumerable<string> candidates,
+        int skip,
+        CancellationToken cancellationToken)
+    {
+        var selected = new List<string>(InactiveRecordCleanupLimit);
+        using var enumerator = candidates.GetEnumerator();
+        for (var index = 0; index < skip; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!enumerator.MoveNext())
+            {
+                return [];
+            }
+        }
+
+        while (selected.Count < InactiveRecordCleanupLimit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!enumerator.MoveNext())
+            {
+                break;
+            }
+            selected.Add(enumerator.Current);
+        }
+        return selected.ToArray();
     }
 
     private async Task PruneInactiveRecordsAsync(

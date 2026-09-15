@@ -23,6 +23,9 @@
     <ProjectReference Include="..\..\src\GitHubTray.Core\GitHubTray.Core.csproj" />
     <ProjectReference Include="..\..\src\GitHubTray.AppState\GitHubTray.AppState.csproj" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardStartup.cs" Link="ViewModels\DashboardStartup.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardStartupSettings.cs" Link="ViewModels\DashboardStartupSettings.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardStateProjection.cs" Link="ViewModels\DashboardStateProjection.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardSectionProjection.cs" Link="ViewModels\DashboardSectionProjection.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardCacheClearPresentation.cs" Link="ViewModels\DashboardCacheClearPresentation.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardPresentationClock.cs" Link="ViewModels\DashboardPresentationClock.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestChecksFlyoutState.cs" Link="ViewModels\PullRequestChecksFlyoutState.cs" />
