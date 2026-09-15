@@ -17,7 +17,8 @@ not a full feature-parity release.
 - Native tray panel, browser links, manual refresh, and periodic refresh.
 - A configurable refresh interval, with visible errors and last-success data
   retained per account when individual requests fail.
-- Verified warm-start restoration from a versioned, account-scoped local cache.
+- Cache-first warm-start restoration for the last-used account, with explicit
+  pending, verified, and failed verification states.
 - Section-level automatic freshness reuse that avoids launching `gh` for eligible
   same-account data while keeping manual Refresh fully forced.
 
@@ -122,8 +123,10 @@ flow, or credential storage is needed. The account is the one selected by `gh`,
 which may differ from the account in Copilot CLI. The read-only
 `copilot_internal/user` endpoint is undocumented and may change or deny access
 for some accounts or credentials. A failed usage request shows an explicit
-error without blocking contributions or activity; only a verified same-account
-last-success snapshot can remain visible, marked stale. Automatic ticks may reuse
+error without blocking contributions or activity; the same account's
+last-success snapshot can remain visible, marked stale. Saved usage is also
+readable before account verification or when verification fails, with the saved
+account explicitly labeled unverified. Automatic ticks may reuse
 usage younger than five minutes, while **Refresh** always fetches it. Successful
 usage snapshots are retained in the same account-scoped dashboard cache as the
 other sections; credentials and raw authentication errors are never stored.
@@ -178,22 +181,37 @@ Use **Quit** to stop the app rather than merely close its panel.
 
 On first launch, the initial refresh starts before the window is constructed and
 overlaps UI initialization and settings loading. The panel still opens immediately
-with loading feedback; it does not wait for GitHub before appearing. Network
-account verification must succeed before any persisted data can be shown. After
-the existing initial `GET /user` verifies the GitHub.com host and stable account
-ID, eligible retained sections for that account are published with **Cached from**
-timestamps while the normal live section requests continue. The final identity
-check and GraphQL viewer checks still gate the replacement live snapshot.
-Subsequent tray opens use the current verified in-memory snapshot, with periodic
-refresh continuing while the panel is hidden. Hidden refreshes update the session
-without rebuilding bound dashboard rows; reopening projects the latest session
-state before showing the panel. Unchanged sections retain their existing rows.
+with loading feedback; it does not wait for GitHub before appearing. When a usable
+cache exists, the last-used saved account is identified and all eligible saved
+dashboard surfaces are published before the initial `GET /user` completes. The
+header marks that account as saved and unverified, and each section keeps its
+original **Cached from** timestamp while background verification and due section
+requests continue. A verification or network failure leaves that saved data
+readable with an explicit error and unverified label. A confirmed different REST
+account or mismatched GraphQL viewer removes the previous account's content
+immediately; results from different accounts are never combined.
+Subsequent tray opens use the current in-memory snapshot and its verification
+state, with periodic
+refresh continuing while the panel is hidden. Hiding releases the dashboard page
+and its presentation rows while keeping the tray, native window shell, settings,
+and refresh session alive. Reopening reconstructs the page from the latest
+session state before showing it; it does not wait for another network
+refresh. This favors lower hidden memory over instant reopening. While visible,
+unchanged sections retain their existing rows.
+The selected section and preference values remain available; transient popups
+close and list scrolling starts afresh when the page is reconstructed.
 The heatmap also defers visual rebuilding while Preferences is open. Startup
 freshness and Preferences share one settings-file read.
 
 The dashboard cache lives under the app's user-local data folder in a
 `dashboard-cache` directory, separate from `settings.json`. Records are
 partitioned by GitHub host and stable user ID and retain the login for display.
+An atomic `last-account.json` selector records the account last confirmed by the
+process, without credentials. On upgrade, if that selector is absent, the store
+chooses the most recently written compatible account record once and persists
+that choice; section success timestamps are not used as an account-activity signal.
+An unreadable or incompatible selector produces a cache diagnostic rather than
+silently selecting another account.
 Each section has its own original successful-fetch timestamp and representation
 revision. A section is reusable for less than seven days; at the exact seven-day
 boundary it is pruned. Successful empty responses replace older nonempty data,
@@ -203,14 +221,16 @@ atomically, so a failed or cancelled write leaves the previous valid record.
 The cache can contain dashboard content visible to the authenticated account,
 including private repository metadata and Copilot quota details. It never stores
 GitHub credentials, authorization headers, or raw authentication diagnostics.
-There is no offline cold-start view: if the initial identity request fails or
-cannot complete, persisted rows remain hidden. Automatic refresh may reuse
-eligible sections according to the freshness windows above; a manual full refresh
-still performs the existing eight API operations.
+This deliberately permits an offline cold-start view: saved private data may be
+shown before account verification and remains visible if verification fails.
+The UI never labels that data verified or refreshed unless the corresponding
+operation succeeds. Automatic refresh may reuse eligible sections according to
+the freshness windows above; a manual full refresh still performs the existing
+eight API operations.
 
-**Preferences > Clear cached data** removes every dashboard record owned by the
-cache store for all cached accounts on this device. It does not sign out of
-GitHub CLI, delete credentials, or reset the refresh interval or contribution
+**Preferences > Clear cached data** removes every dashboard record and the
+last-used-account selector owned by the cache store on this device. It does not
+sign out of GitHub CLI, delete credentials, or reset the refresh interval or contribution
 cell size. The currently rendered dashboard can remain visible after clearing,
 but it is no longer reusable and cannot satisfy automatic freshness checks. The
 next accepted refresh fetches every section with the normal initial/final identity
@@ -226,9 +246,11 @@ complete success; retry after closing anything using the app's local-data folder
 Settings and unrelated files are never part of the deletion set.
 
 Deterministic startup tests record the first-data behavior rather than a timing
-claim: a cold start first publishes live results, while a warm start can publish
-verified retained data after the initial identity request and before deliberately
-delayed live sections. This is not a measured startup-speed guarantee.
+claim: a cold start first publishes live results, while a warm start publishes
+saved unverified data even when the initial identity request is deliberately
+blocked. Account-state changes reach WinUI during every refresh, without waiting
+for unrelated section requests to finish. This is not a measured
+startup-speed guarantee.
 
 Before redeploying, quit the running app and let any previous
 `winapp run --debug-output` session end. A debugger-attached instance can hold
@@ -310,8 +332,8 @@ caller-wait cancellation, and shutdown.
 The App tests compile the production heatmap view model and viewport geometry
 without WinUI and cover selection transitions, date retention, coherent property
 notifications, pixel-aligned preset sizes, and right-edge anchoring.
-They also cover verified warm-start projection, startup fetch/setup overlap,
-single-flight handoff and shutdown,
+They also cover cache-first unverified warm-start projection, immediate confirmed
+account-change removal, startup fetch/setup overlap, single-flight handoff and shutdown,
 deferred check-detail creation and recycling, and hidden-panel presentation-clock
 behavior. These lifecycle tests use fixture data rather than live GitHub requests.
 The runtime checks verify x86/x64/ARM64 selection, preservation of an explicitly
@@ -328,9 +350,12 @@ CI also checks the native published executable and reruns the JSON persistence t
 
 ### Memory measurements
 
-Hiding the panel keeps its native window and dashboard available for reopening;
-it does not unload WinUI or stop scheduled GitHub refreshes. A nonzero hidden
-footprint is therefore expected and is not, by itself, evidence of a leak.
+Hiding the panel releases its dashboard page and presentation rows, but keeps the
+native window shell, session data, and its verification state available for reopening. It does
+not unload WinUI or stop scheduled GitHub refreshes. A nonzero hidden footprint
+is therefore expected and is not, by itself, evidence of a leak. Releasing object
+references also does not guarantee an immediate drop in resident memory: garbage
+collection and runtime/native allocator reuse affect when pages return to Windows.
 Compare the same architecture and build configuration: Debug includes the
 managed runtime and JIT, while a NativeAOT **publish** does not.
 
@@ -349,6 +374,34 @@ The script only observes the selected process; it does not hide the panel,
 force garbage collection, trim memory, or change refresh settings. Use the same
 account, selected tab, cache state, warmup, and hide/show sequence when comparing
 builds, and allow a scheduled refresh cycle when investigating background work.
+Measure reopen latency alongside hidden memory, because reconstructing the page
+moves visual creation work onto the reveal path. Do not compare a cold first
+launch with a subsequent tray reopen, or treat a first-render callback as proof
+that Windows has presented that frame on screen.
+
+For opt-in reopen diagnostics, build and run with the same architecture and
+`EnablePanelPerformanceDiagnostics=true`. For example, on ARM64:
+
+```powershell
+winapp run .\src\GitHubTray.App\GitHubTray.App.csproj --arch arm64 -p Platform=ARM64 -p EnablePanelPerformanceDiagnostics=true
+```
+
+Do not attach a debugger for a before/after comparison. The diagnostic build
+writes `GitHubTray-performance-<PID>.jsonl` in the package's `LocalState` folder.
+Open and hide the panel repeatedly after its data has loaded, then summarize
+that trace and an optional idle-footprint capture from the same process:
+
+```powershell
+.\scripts\Summarize-PanelPerformance.ps1 -TracePath '<LocalState>\GitHubTray-performance-<PID>.jsonl' -IdleFootprintPath .\artifacts\idle-memory.json
+```
+
+The summary excludes initial launch and reports sample counts, medians, and
+ranges for synchronous preparation, the synchronous show call, and the first
+WinUI rendering callback. Rendering callbacks are a diagnostic proxy, not
+input-to-display or compositor-present latency. Idle samples measure memory
+separately from the immediate show/hide events. Use equal workloads and sampling
+cadence for both builds. Diagnostics do not force garbage collection or trim the
+working set, and ordinary builds do not enable this logging.
 
 For native selection checks, open the running tray panel with a loaded calendar:
 
@@ -376,7 +429,7 @@ returns to the dashboard.
 
 See [docs/PORTING.md](docs/PORTING.md) for the source reference revision, API and
 architecture contracts, first-milestone boundaries, and the roadmap toward
-repository dashboards, native OAuth, offline caching, and Windows distribution.
+repository dashboards, native OAuth, advanced cache policies, and Windows distribution.
 
 The reference repository is kept outside this project at
 `%USERPROFILE%\Projects\references\RepoBar`. RepoBar is MIT licensed. This port
