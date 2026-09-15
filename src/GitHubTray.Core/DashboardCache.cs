@@ -97,12 +97,14 @@ public interface IDashboardCacheStore
 public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 {
     public static readonly TimeSpan Retention = TimeSpan.FromDays(7);
+    internal const int InactiveRecordCleanupLimit = 8;
     private const long MaximumFileSize = 16 * 1024 * 1024;
     private readonly string _rootDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Action<string, string>? _beforeReplace;
     private readonly Action<string>? _beforeDelete;
     private long _generation;
+    private int _inactivePruneCursor;
 
     public JsonDashboardCacheStore(string rootDirectory)
         : this(rootDirectory, null, null)
@@ -132,6 +134,8 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
     {
         ValidateAccount(account);
         var operationGeneration = Volatile.Read(ref _generation);
+        var filePath = GetFilePath(account);
+        var inactiveCandidates = GetInactivePruneCandidates(filePath);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -140,8 +144,8 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 return InvalidatedRead();
             }
 
-            var filePath = GetFilePath(account);
-            await PruneInactiveRecordsAsync(filePath, now, cancellationToken).ConfigureAwait(false);
+            await PruneInactiveRecordsAsync(inactiveCandidates, now, cancellationToken)
+                .ConfigureAwait(false);
             await DeleteInterruptedWritesAsync(filePath).ConfigureAwait(false);
             FileStream stream;
             try
@@ -427,15 +431,12 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
     }
 
-    private async Task PruneInactiveRecordsAsync(
-        string activeFilePath,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
+    private string[] GetInactivePruneCandidates(string activeFilePath)
     {
         var accountDirectory = Path.GetDirectoryName(activeFilePath)!;
         if (!Directory.Exists(accountDirectory))
         {
-            return;
+            return [];
         }
 
         string[] ownedFiles;
@@ -443,14 +444,37 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         {
             ownedFiles = Directory.EnumerateFiles(
                     accountDirectory, "*", SearchOption.TopDirectoryOnly)
-                .Where(IsOwnedCacheFile)
+                .Where(path =>
+                    IsOwnedCacheFile(path) &&
+                    !string.Equals(path, activeFilePath, StringComparison.OrdinalIgnoreCase))
+                .Order(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
-            return;
+            return [];
+        }
+        if (ownedFiles.Length <= InactiveRecordCleanupLimit)
+        {
+            return ownedFiles;
         }
 
+        var offset = Interlocked.Add(
+            ref _inactivePruneCursor, InactiveRecordCleanupLimit) - InactiveRecordCleanupLimit;
+        var start = (int)((uint)offset % (uint)ownedFiles.Length);
+        var selected = new string[InactiveRecordCleanupLimit];
+        for (var index = 0; index < selected.Length; index++)
+        {
+            selected[index] = ownedFiles[(start + index) % ownedFiles.Length];
+        }
+        return selected;
+    }
+
+    private async Task PruneInactiveRecordsAsync(
+        IReadOnlyList<string> ownedFiles,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
         foreach (var filePath in ownedFiles)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -464,10 +488,6 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 {
                     // Another process may hold an interrupted write; retry on a future read.
                 }
-                continue;
-            }
-            if (string.Equals(filePath, activeFilePath, StringComparison.OrdinalIgnoreCase))
-            {
                 continue;
             }
 

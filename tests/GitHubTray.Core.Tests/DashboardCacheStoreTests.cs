@@ -147,6 +147,35 @@ public sealed class DashboardCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task InactiveCleanupUsesRotatingBoundedPages()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        await store.WriteAsync(Record(activity: ListSection("active")));
+        for (var userId = 2; userId <= JsonDashboardCacheStore.InactiveRecordCleanupLimit + 3; userId++)
+        {
+            await store.WriteAsync(Record(
+                new("github.com", userId, $"user-{userId}"),
+                activity: ListSection($"expired-{userId}") with
+                {
+                    SucceededAt = Now - JsonDashboardCacheStore.Retention
+                }));
+        }
+        var accountDirectory = Path.GetDirectoryName(store.GetFilePath(Octocat))!;
+
+        _ = await store.ReadAsync(Octocat, Now);
+
+        Assert.Equal(
+            3,
+            Directory.EnumerateFiles(accountDirectory, "*.json", SearchOption.TopDirectoryOnly)
+                .Count());
+
+        _ = await store.ReadAsync(Octocat, Now);
+
+        Assert.Single(Directory.EnumerateFiles(
+            accountDirectory, "*.json", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
     public async Task MalformedIncompatibleAndInterruptedFilesAreExplicitMisses()
     {
         var store = new JsonDashboardCacheStore(_directory);
