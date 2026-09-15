@@ -65,8 +65,7 @@ public sealed record CopilotUsageViewModel(
     {
         if (!displayable)
         {
-            return new("", [], refreshing ? "Loading Copilot usage..."
-                : "Copilot usage has not been loaded.", false);
+            return new("", [], refreshing ? "" : "Copilot usage has not been loaded.", false);
         }
 
         var usage = section?.Usage;
@@ -92,21 +91,15 @@ public sealed record CopilotUsageViewModel(
         var status = section?.Error is { } error
             ? $"{(section.IsStale ? "Stale usage" : "Usage unavailable")}: {error}" +
                 (section.UpdatedAt is { } updated ? $" Last success {updated.ToLocalTime():g}." : "")
+            : refreshing
+                ? ""
             : section?.Source == DashboardSectionSource.Cached
                 ? section.UpdatedAt is { } cachedAt
-                    ? refreshing
-                        ? $"Cached from {cachedAt.ToLocalTime():g}. " +
-                          $"{(accountVerified ? "Refreshing Copilot usage..." : "Account verification pending...")}"
-                        : $"Cached from {cachedAt.ToLocalTime():g}." +
-                          (accountVerified ? "" : " Account unverified.")
-                    : refreshing
-                        ? accountVerified
-                            ? "Cached Copilot usage. Refreshing..."
-                            : "Cached Copilot usage. Account verification pending..."
-                        : accountVerified
-                            ? "Cached Copilot usage."
-                            : "Cached Copilot usage. Account unverified."
-            : refreshing ? "Refreshing Copilot usage..."
+                    ? $"Cached from {cachedAt.ToLocalTime():g}." +
+                      (accountVerified ? "" : " Account unverified.")
+                    : accountVerified
+                        ? "Cached Copilot usage."
+                        : "Cached Copilot usage. Account unverified."
             : usage is null ? "Copilot usage has not been loaded."
             : rows.IsEmpty ? "No metered Copilot quota." : "";
         return new(plan, rows, status, section?.Error is not null);

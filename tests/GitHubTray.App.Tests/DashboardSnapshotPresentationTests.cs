@@ -88,6 +88,6 @@ public sealed class DashboardSnapshotPresentationTests
         Assert.Contains("refreshing contributions", refreshingContributions);
         Assert.StartsWith("Cached from ", completedCopilot.Status);
         Assert.DoesNotContain("refreshing", completedCopilot.Status, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Refreshing Copilot usage", refreshingCopilot.Status);
+        Assert.Empty(refreshingCopilot.Status);
     }
 }
