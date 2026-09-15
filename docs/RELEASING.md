@@ -41,9 +41,10 @@ The Copilot quota `ItemsSource` must remain a reference-type, read-only list at
 the WinRT boundary. Binding a boxed `ImmutableArray<T>` can compile and publish
 successfully but fail during initial NativeAOT layout with `0x80070057`.
 Check both the initial empty state and populated quota rows in the native app.
-The window explicitly creates and assigns its `OverlappedPresenter`; do not rely
-on casting the runtime's `AppWindow.Presenter` wrapper to that concrete type in
-NativeAOT builds.
+The window keeps its platform-owned presenter and queries the generated
+`OverlappedPresenter` projection with C#/WinRT's `As<T>()` helper. Do not replace
+it with `OverlappedPresenter.Create()`, which restores a native frame around the
+otherwise borderless panel.
 
 ## Outputs and profiles
 

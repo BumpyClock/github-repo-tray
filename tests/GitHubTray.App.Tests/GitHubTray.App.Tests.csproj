@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <Platforms>AnyCPU;ARM64;x64</Platforms>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,25 +18,17 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CopilotUsageViewModel.cs"
-             Link="ViewModels\CopilotUsageViewModel.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CopilotUsageViewModel.cs" Link="ViewModels\CopilotUsageViewModel.cs" />
     <ProjectReference Include="..\..\src\GitHubTray.Core\GitHubTray.Core.csproj" />
     <ProjectReference Include="..\..\src\GitHubTray.AppState\GitHubTray.AppState.csproj" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardStartup.cs"
-             Link="ViewModels\DashboardStartup.cs" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardPresentationClock.cs"
-             Link="ViewModels\DashboardPresentationClock.cs" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestChecksFlyoutState.cs"
-             Link="ViewModels\PullRequestChecksFlyoutState.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardStartup.cs" Link="ViewModels\DashboardStartup.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\DashboardPresentationClock.cs" Link="ViewModels\DashboardPresentationClock.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestChecksFlyoutState.cs" Link="ViewModels\PullRequestChecksFlyoutState.cs" />
     <!-- Compile the real App ViewModel, including its toolkit-generated notifications, without WinUI. -->
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionHeatmapViewModel.cs"
-             Link="ViewModels\ContributionHeatmapViewModel.cs" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionViewport.cs"
-             Link="ViewModels\ContributionViewport.cs" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CheckBarLayout.cs"
-             Link="ViewModels\CheckBarLayout.cs" />
-    <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestCardViewModel.cs"
-             Link="ViewModels\PullRequestCardViewModel.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionHeatmapViewModel.cs" Link="ViewModels\ContributionHeatmapViewModel.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionViewport.cs" Link="ViewModels\ContributionViewport.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CheckBarLayout.cs" Link="ViewModels\CheckBarLayout.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestCardViewModel.cs" Link="ViewModels\PullRequestCardViewModel.cs" />
   </ItemGroup>
 
 </Project>

@@ -1,12 +1,37 @@
 <Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+  </Configurations>
   <Folder Name="/src/">
-    <Project Path="src/GitHubTray.App/GitHubTray.App.csproj" />
-    <Project Path="src/GitHubTray.AppState/GitHubTray.AppState.csproj" />
-    <Project Path="src/GitHubTray.Core/GitHubTray.Core.csproj" />
+    <Project Path="src/GitHubTray.App/GitHubTray.App.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Deploy Solution="*|ARM64" />
+      <Deploy Solution="*|x64" />
+    </Project>
+    <Project Path="src/GitHubTray.AppState/GitHubTray.AppState.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/GitHubTray.Core/GitHubTray.Core.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/GitHubTray.App.Tests/GitHubTray.App.Tests.csproj" />
-    <Project Path="tests/GitHubTray.AppState.Tests/GitHubTray.AppState.Tests.csproj" />
-    <Project Path="tests/GitHubTray.Core.Tests/GitHubTray.Core.Tests.csproj" />
+    <Project Path="tests/GitHubTray.App.Tests/GitHubTray.App.Tests.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="tests/GitHubTray.AppState.Tests/GitHubTray.AppState.Tests.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="tests/GitHubTray.Core.Tests/GitHubTray.Core.Tests.csproj">
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
   </Folder>
 </Solution>

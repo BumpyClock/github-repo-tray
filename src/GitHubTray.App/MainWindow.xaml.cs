@@ -9,6 +9,7 @@ using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using WinRT;
 using Windows.Storage;
 
 namespace GitHubTray_App;
@@ -35,13 +36,12 @@ public sealed partial class MainWindow : Window
             DispatcherQueue);
         _page = new MainPage(ViewModel, this);
         PageHost.Child = _page;
-        var presenter = OverlappedPresenter.Create();
+        var presenter = AppWindow.Presenter.As<OverlappedPresenter>();
         presenter.SetBorderAndTitleBar(false, false);
         presenter.IsResizable = false;
         presenter.IsMaximizable = false;
         presenter.IsMinimizable = false;
         presenter.IsAlwaysOnTop = true;
-        AppWindow.SetPresenter(presenter);
         var cornerPreference = 2; // DWMWCP_ROUND; unsupported systems retain native square corners.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 33, ref cornerPreference, sizeof(int));
         var borderColor = -2; // DWMWA_COLOR_NONE: keep the native frame borderless.
