@@ -19,6 +19,21 @@ public enum StatusTone
 }
 
 /// <summary>
+/// The single badge a pull request card shows. Terminal states outrank review, and review
+/// outranks a bare "Open", so the card never stacks two status words that mean the same moment.
+/// </summary>
+public enum PullRequestStatusKind
+{
+    Open,
+    Draft,
+    ReviewRequired,
+    Approved,
+    ChangesRequested,
+    Closed,
+    Merged
+}
+
+/// <summary>
 /// Presentation of one PR at one section refresh. Only the clock changes in place;
 /// a new section result replaces this model, including its explicit freshness.
 /// No WinUI types, timers, fetching, or navigation live here.
@@ -31,6 +46,7 @@ public sealed class PullRequestCardViewModel : ObservableObject
     private string _relativeTimestamp = "";
     private readonly ImmutableArray<PullRequestCheck> _checkItems;
     private IReadOnlyList<PullRequestCheckViewModel>? _checks;
+    private IReadOnlyList<PullRequestCheckGroup>? _checkGroups;
 
     public PullRequestCardViewModel(DashboardItem item, bool isStale, DateTimeOffset? now = null)
     {
@@ -47,6 +63,7 @@ public sealed class PullRequestCardViewModel : ObservableObject
         // still has the draft bit. Current state is independent of the latest event.
         IsDraft = State == PullRequestState.Open && details.IsDraft;
         Branches = $"{details.HeadRefName} → {details.BaseRefName}";
+        ReviewDecision = details.ReviewDecision;
         ReviewDecisionText = details.ReviewDecision switch
         {
             "APPROVED" => "Approved",
@@ -102,6 +119,10 @@ public sealed class PullRequestCardViewModel : ObservableObject
         ChecksExplanation = IsChecksTruncated
             ? $"{AggregateDescription(checks.State)} Individual outcomes below cover only the loaded checks, not exact progress."
             : AggregateDescription(checks.State);
+        CheckSegments = BuildSegments(items, checks.TotalCount);
+        (ChecksVerdict, ChecksDenominator) =
+            SummarizeVerdict(checks.State, items, checks.TotalCount, IsChecksTruncated, IsStale);
+        ChecksCaveat = BuildCaveat(checks.State, items, checks.TotalCount, IsChecksTruncated, IsStale);
         EmptyChecksMessage = checks.State == CheckRollupState.NoChecks && checks.TotalCount == 0
             ? "No checks were reported for this commit."
             : "Individual check results are unavailable. Missing results do not mean checks passed.";
@@ -137,7 +158,57 @@ public sealed class PullRequestCardViewModel : ObservableObject
     };
     public string StateDescription => $"{(IsStale ? "Last known state" : "Current state")}: {StateLabel}."
         + (IsStale ? " Section refresh failed." : "");
+
+    /// <summary>
+    /// The card shows one status, not two. A merged or closed pull request is finished, so the
+    /// review decision that got it there is history; only an open pull request has a review
+    /// decision worth acting on, and when it does that decision outranks the bare "Open".
+    /// </summary>
+    public PullRequestStatusKind StatusKind => State switch
+    {
+        PullRequestState.Merged => PullRequestStatusKind.Merged,
+        PullRequestState.Closed => PullRequestStatusKind.Closed,
+        _ when IsDraft => PullRequestStatusKind.Draft,
+        _ => ReviewDecision switch
+        {
+            "CHANGES_REQUESTED" => PullRequestStatusKind.ChangesRequested,
+            "REVIEW_REQUIRED" => PullRequestStatusKind.ReviewRequired,
+            "APPROVED" => PullRequestStatusKind.Approved,
+            _ => PullRequestStatusKind.Open
+        }
+    };
+    public string StatusLabel => StatusKind switch
+    {
+        PullRequestStatusKind.Merged => "Merged",
+        PullRequestStatusKind.Closed => "Closed",
+        PullRequestStatusKind.Draft => "Draft",
+        PullRequestStatusKind.ChangesRequested => "Changes requested",
+        PullRequestStatusKind.ReviewRequired => "Review required",
+        PullRequestStatusKind.Approved => "Approved",
+        _ => "Open"
+    };
+    public string StatusGlyph => StatusKind switch
+    {
+        PullRequestStatusKind.Merged => "\uE73E", // CheckMark
+        PullRequestStatusKind.Closed => "\uE711", // Cancel
+        PullRequestStatusKind.Draft => "\uE70F", // Edit
+        PullRequestStatusKind.ChangesRequested => "\uE7BA", // Warning
+        PullRequestStatusKind.ReviewRequired => "\uE8F2", // People
+        PullRequestStatusKind.Approved => "\uE73E", // CheckMark
+        _ => "\uEA3A" // CircleRing
+    };
+    public string StatusVisualState => $"Status{StatusKind}";
+    /// <summary>
+    /// The pill shows the review decision on an open pull request, so the tooltip still names the
+    /// underlying state. Nothing the badge replaced disappears from the card.
+    /// </summary>
+    public string StatusDescription => StatusKind is PullRequestStatusKind.ChangesRequested
+        or PullRequestStatusKind.ReviewRequired or PullRequestStatusKind.Approved
+        ? $"{StatusLabel}. {StateDescription}"
+        : StateDescription;
+
     public string Branches { get; }
+    public string? ReviewDecision { get; }
     public string ReviewDecisionText { get; }
     public string ReviewDecisionGlyph { get; }
     public StatusTone ReviewDecisionTone { get; }
@@ -145,6 +216,8 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public bool HasReviewDecision => ReviewDecisionText.Length != 0;
     public int CommentCount { get; }
     public bool HasComments => CommentCount > 0;
+    /// <summary>The closing status row only exists when it has something to say.</summary>
+    public bool HasCardFooter => HasComments;
     public string CommentCountText => CommentCount.ToString(CultureInfo.CurrentCulture);
     public string CommentSummary { get; }
     public IReadOnlyList<PullRequestLabelChip> LabelChips { get; }
@@ -155,14 +228,25 @@ public sealed class PullRequestCardViewModel : ObservableObject
     /// <summary>Individual rows are materialized once, when the check details are requested.</summary>
     public IReadOnlyList<PullRequestCheckViewModel> Checks =>
         _checks ??= _checkItems.Select(check => new PullRequestCheckViewModel(check)).ToArray();
+    /// <summary>Grouped rows for the details flyout, materialized with <see cref="Checks"/>.</summary>
+    public IReadOnlyList<PullRequestCheckGroup> CheckGroups => _checkGroups ??= BuildGroups(Checks);
     internal bool HasCreatedCheckDetails => _checks is not null;
     public bool HasChecks => !_checkItems.IsEmpty;
     public bool IsChecksTruncated { get; }
     public string CheckCountLabel { get; }
     public string ChecksSummary { get; }
+    /// <summary>The headline outcome, short enough to read without parsing a sentence.</summary>
+    public string ChecksVerdict { get; }
+    /// <summary>What the verdict is measured against; carries the truncation count when there is one.</summary>
+    public string ChecksDenominator { get; }
+    public bool HasChecksDenominator => ChecksDenominator.Length != 0;
+    /// <summary>Everything the bar cannot show honestly, stated once instead of woven into the summary.</summary>
+    public string ChecksCaveat { get; }
+    public bool HasChecksCaveat => ChecksCaveat.Length != 0;
+    public IReadOnlyList<CheckBarSegment> CheckSegments { get; }
+    public bool HasCheckSegments => CheckSegments.Count > 0;
     public string ChecksGlyph { get; }
     public StatusTone ChecksTone { get; }
-    public string ChecksVisualState => $"Checks{ChecksTone}";
     public string CheckStateCounts { get; }
     public string ChecksExplanation { get; }
     public string EmptyChecksMessage { get; }
@@ -261,9 +345,120 @@ public sealed class PullRequestCardViewModel : ObservableObject
             tone);
     }
 
-    /// <summary>The chip's icon tracks its severity, not whichever check sorted first.</summary>
-    private static string ToneGlyph(StatusTone tone) => tone switch
+    /// <summary>
+    /// Restates the loaded outcomes as a short verdict plus what it is measured against.
+    /// It reports only what was loaded; anything the aggregate alone claims is left to
+    /// <see cref="BuildCaveat"/> so a verdict can never overstate the evidence.
+    /// </summary>
+    private static (string Verdict, string Denominator) SummarizeVerdict(
+        CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks,
+        int totalCount, bool isTruncated, bool isStale)
     {
+        var loaded = checks.Length;
+        var noun = $"{loaded} {(loaded == 1 ? "check" : "checks")}";
+        // Truncation replaces the denominator outright: "of 6 checks" would be a lie
+        // when only 6 of 142 were returned.
+        string Support(bool countLed) => isTruncated ? $"{loaded} of {totalCount} loaded"
+            : countLed ? $"of {noun}" : noun;
+
+        // Stale results describe an older commit, so nothing below them can read as settled.
+        if (isStale)
+            return ("Stale results", loaded == 0 ? "older commit" : $"{Support(false)} · older commit");
+        if (loaded == 0)
+            return aggregate == CheckRollupState.NoChecks && totalCount == 0
+                ? ("No checks", "none reported for this commit")
+                : ("Checks unknown", "state not reported");
+
+        var failing = checks.Count(check => check.State == CheckState.Failed);
+        if (failing > 0) return ($"{failing} failing", Support(true));
+        if (aggregate == CheckRollupState.Failed) return ("Checks failed", Support(false));
+
+        var attention = checks.Count(check =>
+            check.State is CheckState.ActionRequired or CheckState.Cancelled or CheckState.Unknown);
+        if (attention > 0)
+            return ($"{attention} {(attention == 1 ? "needs" : "need")} attention", Support(true));
+        if (aggregate is CheckRollupState.Unknown or CheckRollupState.NoChecks)
+            return ("Checks unknown", Support(false));
+
+        var running = checks.Count(check => check.State is CheckState.Running or CheckState.Pending);
+        if (running > 0) return ($"{running} running", Support(true));
+        if (aggregate == CheckRollupState.Pending) return ("Checks pending", Support(false));
+
+        // Neutral and skipped results are completions, not successes, so only an
+        // untruncated, wholly passing list earns the word "passed".
+        return !isTruncated && aggregate == CheckRollupState.Passed
+            && checks.All(check => check.State == CheckState.Passed)
+            ? ("All checks passed", noun)
+            : ("Completed", Support(false));
+    }
+
+    /// <summary>
+    /// Collects the qualifications the bar and verdict cannot carry, so the details view
+    /// states them once instead of prefixing every summary line with them.
+    /// </summary>
+    private static string BuildCaveat(CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks,
+        int totalCount, bool isTruncated, bool isStale)
+    {
+        var caveats = new List<string>(3);
+        if (isStale)
+            caveats.Add("Section refresh failed, so these results describe an older commit.");
+        if (isTruncated)
+            caveats.Add($"GitHub returned {checks.Length} of {totalCount} checks. "
+                + "Results that are missing do not mean those checks passed.");
+        if (UnshownAggregate(aggregate, checks) is not null)
+            caveats.Add($"{AggregateDescription(aggregate)} No loaded check shows that outcome.");
+        return string.Join(" ", caveats);
+    }
+
+    private const int MaxDetailedSegments = 12;
+
+    /// <summary>
+    /// Builds the bar runs, worst first. Small lists get one run per check so the
+    /// reader can count them; longer lists fall back to proportional runs per outcome.
+    /// </summary>
+    private static IReadOnlyList<CheckBarSegment> BuildSegments(
+        ImmutableArray<PullRequestCheck> checks, int totalCount)
+    {
+        var segments = new List<CheckBarSegment>();
+        var detailed = totalCount <= MaxDetailedSegments;
+        foreach (var group in checks.GroupBy(check => check.State).OrderBy(group => SeverityRank(group.Key)))
+        {
+            var tone = PullRequestCheckViewModel.ToneFor(group.Key);
+            var count = group.Count();
+            if (detailed) segments.AddRange(Enumerable.Repeat(new CheckBarSegment(tone, 1, true), count));
+            else segments.Add(new CheckBarSegment(tone, count, true));
+        }
+
+        // Checks GitHub never returned occupy the bar as absence. They carry no tone,
+        // so a partial list can never be mistaken for a passing one.
+        var unloaded = totalCount - checks.Length;
+        if (unloaded > 0) segments.Add(new CheckBarSegment(StatusTone.Neutral, unloaded, false));
+        return segments;
+    }
+
+    /// <summary>
+    /// Groups the detail rows worst first. Quiet outcomes start collapsed only when
+    /// something worse exists to read instead.
+    /// </summary>
+    private static IReadOnlyList<PullRequestCheckGroup> BuildGroups(
+        IReadOnlyList<PullRequestCheckViewModel> checks)
+    {
+        var groups = checks.GroupBy(check => check.RawState)
+            .OrderBy(group => SeverityRank(group.Key)).ToArray();
+        var hasWorse = groups.Any(group => !IsQuiet(group.Key));
+        return groups.Select(group => new PullRequestCheckGroup(
+            PullRequestCheckViewModel.StateText(group.Key),
+            PullRequestCheckViewModel.ToneFor(group.Key),
+            PullRequestCheckViewModel.StateGlyph(group.Key),
+            isExpanded: !(IsQuiet(group.Key) && hasWorse),
+            group.ToArray())).ToArray();
+    }
+
+    private static bool IsQuiet(CheckState state) =>
+        state is CheckState.Passed or CheckState.Skipped or CheckState.Neutral;
+
+    /// <summary>The chip's icon tracks its severity, not whichever check sorted first.</summary>
+    private static string ToneGlyph(StatusTone tone) => tone switch    {
         StatusTone.Success => "\uE73E",
         StatusTone.Failure => "\uEA39",
         StatusTone.Caution => "\uE7BA",
@@ -372,8 +567,25 @@ public sealed class PullRequestCardViewModel : ObservableObject
 }
 
 /// <summary>One label chip, or the trailing overflow chip when labels did not fit.</summary>
-public sealed class PullRequestLabelChip(string text, string? color, string toolTip)
+/// <summary>
+/// One outcome's worth of detail rows. Groups let the flyout lead with the checks that
+/// need attention and fold away the ones that do not, without hiding anything.
+/// </summary>
+public sealed class PullRequestCheckGroup(
+    string title, StatusTone tone, string glyph, bool isExpanded,
+    IReadOnlyList<PullRequestCheckViewModel> items)
 {
+    public string Title { get; } = title;
+    public StatusTone Tone { get; } = tone;
+    public string Glyph { get; } = glyph;
+    public bool IsExpanded { get; } = isExpanded;
+    public IReadOnlyList<PullRequestCheckViewModel> Items { get; } = items;
+    public int Count => Items.Count;
+    public string CountText => Count.ToString(CultureInfo.CurrentCulture);
+    public string AccessibleName => $"{Title}, {Count} {(Count == 1 ? "check" : "checks")}";
+}
+
+public sealed class PullRequestLabelChip(string text, string? color, string toolTip){
     public string Text { get; } = text;
 
     /// <summary>GitHub's six-digit label color, or null for the overflow chip.</summary>
@@ -388,6 +600,7 @@ public sealed class PullRequestCheckViewModel(PullRequestCheck check)
     public string State { get; } = StateText(check.State);
     public string Glyph { get; } = StateGlyph(check.State);
     public StatusTone Tone { get; } = ToneFor(check.State);
+    internal CheckState RawState { get; } = check.State;
     public string AccessibleName => $"{Name}: {State}";
 
     internal static StatusTone ToneFor(CheckState state) => state switch

@@ -10,9 +10,13 @@ internal sealed class PullRequestChecksFlyoutState
 
     public IReadOnlyList<PullRequestCheckViewModel>? Items { get; private set; }
 
+    /// <summary>The grouped projection the flyout binds, materialized alongside <see cref="Items"/>.</summary>
+    public IReadOnlyList<PullRequestCheckGroup>? Groups { get; private set; }
+
     public IReadOnlyList<PullRequestCheckViewModel>? Open(PullRequestCardViewModel? data)
     {
         _openData = data;
+        Groups = data?.CheckGroups;
         return Items = data?.Checks;
     }
 
@@ -22,6 +26,7 @@ internal sealed class PullRequestChecksFlyoutState
     {
         _openData = null;
         Items = null;
+        Groups = null;
     }
 
     public PullRequestCardViewModel? GetOpenData(PullRequestCardViewModel? currentData) =>

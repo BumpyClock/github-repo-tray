@@ -204,9 +204,65 @@ public sealed class PullRequestPresentationTests
             Assert.DoesNotContain("review required", vm.AccessibleName, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void ClockNotifiesMetadataAndAccessibleNameWithoutFetching()
+    [Theory]
+    // A finished pull request reports how it finished, never the review that got it there.
+    [InlineData(PullRequestState.Merged, "APPROVED", PullRequestStatusKind.Merged, "Merged")]
+    [InlineData(PullRequestState.Merged, "CHANGES_REQUESTED", PullRequestStatusKind.Merged, "Merged")]
+    [InlineData(PullRequestState.Closed, "APPROVED", PullRequestStatusKind.Closed, "Closed")]
+    // An open pull request reports the review decision, which outranks a bare "Open".
+    [InlineData(PullRequestState.Open, "APPROVED", PullRequestStatusKind.Approved, "Approved")]
+    [InlineData(PullRequestState.Open, "CHANGES_REQUESTED", PullRequestStatusKind.ChangesRequested, "Changes requested")]
+    [InlineData(PullRequestState.Open, "REVIEW_REQUIRED", PullRequestStatusKind.ReviewRequired, "Review required")]
+    [InlineData(PullRequestState.Open, null, PullRequestStatusKind.Open, "Open")]
+    // An unrecognized decision is not a status worth showing.
+    [InlineData(PullRequestState.Open, "SOMETHING_NEW", PullRequestStatusKind.Open, "Open")]
+    public void StatusBadgeShowsOneLatestActionableStatus(
+        PullRequestState state, string? decision, PullRequestStatusKind kind, string label)
     {
+        var details = Details(Checks(CheckRollupState.NoChecks)) with { State = state, ReviewDecision = decision };
+        var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.Equal(kind, vm.StatusKind);
+        Assert.Equal(label, vm.StatusLabel);
+        Assert.Equal($"Status{kind}", vm.StatusVisualState);
+    }
+
+    [Fact]
+    public void DraftOutranksReviewDecisionInTheBadge()
+    {
+        // Nobody is waiting on a review that the author has not asked for yet.
+        var details = Details(Checks(CheckRollupState.NoChecks)) with { IsDraft = true, ReviewDecision = "REVIEW_REQUIRED" };
+        var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.Equal(PullRequestStatusKind.Draft, vm.StatusKind);
+        Assert.Equal("Draft", vm.StatusLabel);
+        // The decision still reaches assistive technology through the accessible name.
+        Assert.Equal("Review required", vm.ReviewDecisionText);
+    }
+
+    [Fact]
+    public void ReviewStatusKeepsTheUnderlyingStateInItsTooltip()
+    {
+        var details = Details(Checks(CheckRollupState.NoChecks)) with { State = PullRequestState.Open, ReviewDecision = "APPROVED" };
+        var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.StartsWith("Approved.", vm.StatusDescription, StringComparison.Ordinal);
+        Assert.Contains(vm.StateDescription, vm.StatusDescription, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CardFooterExistsOnlyForComments()
+    {
+        // The review chip left the footer, so an approved PR with no comments has no footer row.
+        var quiet = Details(Checks(CheckRollupState.NoChecks)) with { ReviewDecision = "APPROVED", CommentCount = 0 };
+        Assert.False(new PullRequestCardViewModel(Item(quiet), false, UpdatedAt).HasCardFooter);
+
+        var talkative = quiet with { CommentCount = 3 };
+        Assert.True(new PullRequestCardViewModel(Item(talkative), false, UpdatedAt).HasCardFooter);
+    }
+
+    [Fact]
+    public void ClockNotifiesMetadataAndAccessibleNameWithoutFetching()    {
         var vm = Present(Checks(CheckRollupState.NoChecks));
         var notifications = new List<string?>();
         vm.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);

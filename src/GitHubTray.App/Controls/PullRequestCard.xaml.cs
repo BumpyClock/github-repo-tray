@@ -52,26 +52,19 @@ public sealed partial class PullRequestCard : UserControl
     /// <summary>Tints a chip with its own label color, which high contrast replaces outright.</summary>
     public static Brush LabelFillBrush(string? color) =>
         Accessibility.HighContrast || color is null
-            ? ThemeBrush("ControlAltFillColorSecondaryBrush")
+            ? ThemeBrushes.Get("ControlAltFillColorSecondaryBrush")
             : new SolidColorBrush(LabelColor(color)) { Opacity = 0.16 };
 
     public static Brush LabelStrokeBrush(string? color)
     {
-        if (Accessibility.HighContrast) return ThemeBrush("SystemColorWindowTextColorBrush");
+        if (Accessibility.HighContrast) return ThemeBrushes.Get("SystemColorWindowTextColorBrush");
         return color is null
-            ? ThemeBrush("ControlStrokeColorDefaultBrush")
+            ? ThemeBrushes.Get("ControlStrokeColorDefaultBrush")
             : new SolidColorBrush(LabelColor(color)) { Opacity = 0.55 };
     }
 
     /// <summary>Status color for a single check, using the same palette as the rollup chip.</summary>
-    public static Brush ToneBrush(StatusTone tone) => ThemeBrush(tone switch
-    {
-        StatusTone.Success => "SystemFillColorSuccessBrush",
-        StatusTone.Failure => "SystemFillColorCriticalBrush",
-        StatusTone.Caution => "SystemFillColorCautionBrush",
-        StatusTone.Progress => "SystemFillColorAttentionBrush",
-        _ => "TextFillColorSecondaryBrush"
-    });
+    public static Brush ToneBrush(StatusTone tone) => ThemeBrushes.Tone(tone);
 
     private static Color LabelColor(string? color)
     {
@@ -84,18 +77,13 @@ public sealed partial class PullRequestCard : UserControl
     }
 
     // Chips are rebuilt whenever their card's data changes, so resolving the current
-    // theme's brush once per chip is enough; a missing key must never crash a card.
-    private static Brush ThemeBrush(string key) =>
-        Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush
-            ? brush
-            : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-
+    // theme's brush once per chip is enough.
     private static void OnDataChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var card = (PullRequestCard)sender;
         // A recycled row must never leave a flyout acting on the old PR.
         card._checksFlyoutState.Reset();
-        card.ChecksItems.ItemsSource = null;
+        card.ChecksGroups.ItemsSource = null;
         card.ChecksFlyout.Hide();
         card.UpdateStateAppearance();
         card.AuthorPicture.ProfilePicture = null;
@@ -111,12 +99,8 @@ public sealed partial class PullRequestCard : UserControl
         }
     }
 
-    private void UpdateStateAppearance()
-    {
-        VisualStateManager.GoToState(this, Data?.StateLabel ?? "Draft", useTransitions: false);
-        VisualStateManager.GoToState(this, Data?.ChecksVisualState ?? "ChecksNeutral", useTransitions: false);
-        VisualStateManager.GoToState(this, Data?.ReviewVisualState ?? "ReviewNeutral", useTransitions: false);
-    }
+    private void UpdateStateAppearance() =>
+        VisualStateManager.GoToState(this, Data?.StatusVisualState ?? "StatusDraft", useTransitions: false);
 
     private void ChecksButton_Tapped(object sender, TappedRoutedEventArgs args) => args.Handled = true;
 
@@ -127,8 +111,11 @@ public sealed partial class PullRequestCard : UserControl
             args.Handled = true;
     }
 
-    private void ChecksFlyout_Opening(object? sender, object args) =>
-        ChecksItems.ItemsSource = _checksFlyoutState.Open(Data);
+    private void ChecksFlyout_Opening(object? sender, object args)
+    {
+        _checksFlyoutState.Open(Data);
+        ChecksGroups.ItemsSource = _checksFlyoutState.Groups;
+    }
 
     private void ChecksFlyout_Closed(object? sender, object args) => _checksFlyoutState.Close();
 

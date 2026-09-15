@@ -32,6 +32,8 @@
              Link="ViewModels\ContributionHeatmapViewModel.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionViewport.cs"
              Link="ViewModels\ContributionViewport.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CheckBarLayout.cs"
+             Link="ViewModels\CheckBarLayout.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestCardViewModel.cs"
              Link="ViewModels\PullRequestCardViewModel.cs" />
   </ItemGroup>
