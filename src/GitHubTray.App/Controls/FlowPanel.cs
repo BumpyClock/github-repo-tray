@@ -64,8 +64,8 @@ public sealed class FlowPanel : Panel
                 lineHeight = 0;
             }
             if (x > 0) x += ItemSpacing;
-            // A single chip wider than the line is clipped by its own trimming, not dropped.
-            child.Arrange(new Rect(x, y, Math.Min(size.Width, Math.Max(finalSize.Width, size.Width)), size.Height));
+            // A chip wider than the line keeps its measured width and trims its own text.
+            child.Arrange(new Rect(x, y, size.Width, size.Height));
             x += size.Width;
             lineHeight = Math.Max(lineHeight, size.Height);
         }

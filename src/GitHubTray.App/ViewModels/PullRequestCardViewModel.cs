@@ -250,11 +250,21 @@ public sealed class PullRequestCardViewModel : ObservableObject
         // The loaded outcomes are reported as counts rather than one vague word. Evidence
         // that only the aggregate carries is named in front of them instead of replacing them.
         var unshown = UnshownAggregate(aggregate, checks);
-        var dominant = checks.OrderBy(check => SeverityRank(check.State)).First().State;
+        var tone = ToneForChecks(aggregate, checks);
         return (unshown is null ? counts : $"{unshown} · {counts}",
-            unshown is null ? PullRequestCheckViewModel.StateGlyph(dominant) : AggregateGlyph(aggregate),
-            ToneForChecks(aggregate, checks));
+            unshown is null ? ToneGlyph(tone) : AggregateGlyph(aggregate),
+            tone);
     }
+
+    /// <summary>The chip's icon tracks its severity, not whichever check sorted first.</summary>
+    private static string ToneGlyph(StatusTone tone) => tone switch
+    {
+        StatusTone.Success => "\uE73E",
+        StatusTone.Failure => "\uEA39",
+        StatusTone.Caution => "\uE7BA",
+        StatusTone.Progress => "\uE823",
+        _ => "\uE738"
+    };
 
     /// <summary>
     /// Names an aggregate outcome that none of the loaded checks show, so a success
