@@ -12,6 +12,17 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     private const string RateLimitError = "GitHub's API rate limit was reached. Wait before refreshing; previously loaded data is retained.";
 
     [Theory]
+    [InlineData("HTTP 403")]
+    [InlineData("HTTP 404")]
+    public async Task CopilotPermissionFailuresDoNotStartAnotherAuthenticationFlow(string diagnostic)
+    {
+        var api = CreateOutputApi(SensitiveDiagnostic, $"{diagnostic}\n{SensitiveDiagnostic}", 1);
+        var error = await Assert.ThrowsAsync<GitHubException>(() => api.GetAsync(CopilotUsageParser.Endpoint));
+        Assert.Contains("Copilot usage is not accessible to the current gh account", error.Message);
+        Assert.DoesNotContain(SensitiveDiagnostic, error.ToString());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task SuccessfulRequestReturnsStdoutUnchangedAndIgnoresStderr(bool graphQl)
@@ -73,6 +84,59 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
         Assert.Equal("1", root.GetProperty("PromptDisabled").GetString());
         Assert.True(string.IsNullOrEmpty(root.GetProperty("Pager").GetString()));
         Assert.Equal("1", root.GetProperty("NoColor").GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GeneratedPullRequestQueryIsPassedAsOneReadOnlyArgument(bool reviewRequested)
+    {
+        var query = PullRequestParser.Query("octocat", reviewRequested);
+        var api = new GitHubCliApi(() => fixture.CreateStartInfo("inspect"), TimeSpan.FromSeconds(15));
+        using var response = JsonDocument.Parse(await api.QueryAsync(query));
+        Assert.Contains($"query={query}",
+            response.RootElement.GetProperty("Arguments").EnumerateArray().Select(argument => argument.GetString()));
+    }
+
+    [Fact]
+    public async Task PullRequestAllowanceDoesNotPermitModifiedOrAppendedOperations()
+    {
+        var query = PullRequestParser.Query("octocat", false);
+        var api = new GitHubCliApi(() => throw new InvalidOperationException("Must not launch"), TimeSpan.FromSeconds(15));
+        foreach (var invalid in new[]
+        {
+            query + "\nmutation { deleteIssue }",
+            query.Replace("query PullRequests", "mutation PullRequests", StringComparison.Ordinal),
+            query.Replace("first: 30", "first: 100", StringComparison.Ordinal),
+            query.Replace("viewer { login }", "viewer { login } deleteIssue(input: {})", StringComparison.Ordinal)
+        })
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => api.QueryAsync(invalid));
+        }
+        Assert.Throws<ArgumentException>(() => PullRequestParser.Query("octocat\" } mutation {", false));
+    }
+
+    [Fact]
+    public async Task ActivityBatchAllowanceIsBoundedAndRejectsModifiedOperations()
+    {
+        var query = ActivityPullRequestQuery.Query([new("octocat/tray", 42), new("org/other.repo", 9)]);
+        var api = new GitHubCliApi(() => fixture.CreateStartInfo("inspect"), TimeSpan.FromSeconds(15));
+        using var response = JsonDocument.Parse(await api.QueryAsync(query));
+        Assert.Contains($"query={query}",
+            response.RootElement.GetProperty("Arguments").EnumerateArray().Select(argument => argument.GetString()));
+        var blockedApi = new GitHubCliApi(() => throw new InvalidOperationException("Must not launch"), TimeSpan.FromSeconds(15));
+        foreach (var invalid in new[]
+        {
+            query + "\nmutation { deleteIssue }",
+            query.Replace("query ActivityPullRequests", "mutation ActivityPullRequests", StringComparison.Ordinal),
+            query.Replace("first: 100", "first: 200", StringComparison.Ordinal),
+            query.Replace("pr1:", "pr0:", StringComparison.Ordinal)
+        })
+            await Assert.ThrowsAsync<ArgumentException>(() => blockedApi.QueryAsync(invalid));
+        Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query([]));
+        Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query(
+            Enumerable.Range(1, 31).Select(number => new ActivityPullRequestReference("org/repo", number)).ToArray()));
+        Assert.Throws<ArgumentException>(() => ActivityPullRequestQuery.Query([new("org/repo\") { deleteIssue }", 42)]));
     }
 
     [Theory]

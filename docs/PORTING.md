@@ -76,17 +76,83 @@ it is replaced only when the user explicitly saves a valid setting.
 | --- | --- |
 | Account | `GET /user` |
 | Contributions | `POST /graphql` with a read-only `viewer.contributionsCollection.contributionCalendar` query |
-| Activity | `GET /users/{login}/events?per_page=30` |
-| My PRs | `GET /search/issues?q=is:pr is:open author:{login}&sort=updated&order=desc&per_page=30` |
-| Reviews | `GET /search/issues?q=is:pr is:open review-requested:{login}&sort=updated&order=desc&per_page=30` |
+| Copilot usage | `GET /copilot_internal/user` through the same GitHub CLI account |
+| Activity | `GET /users/{login}/events?per_page=30`, then one bounded GraphQL batch for referenced PRs |
+| My PRs | Read-only GraphQL `search(type: ISSUE, first: 30)` for `is:pr author:{login} sort:updated-desc`, including all PR states and latest-commit checks |
+| Reviews | The same GraphQL selection for `is:pr is:open review-requested:{login} sort:updated-desc` |
 | Repositories | `GET /user/repos?sort=pushed&direction=desc&per_page=30&affiliation=owner,collaborator,organization_member` |
 
 Each activity list is bounded, not a complete history or a total count.
 Activity means the user's generated events, not the followed-user feed,
 notifications inbox, or contribution calendar. GitHub's Events API can be delayed
 and returns a limited historical window. Private data depends on the active
-credential's repository access and organization SSO. Incomplete search responses
-are reported rather than silently replacing complete cached results.
+credential's repository access and organization SSO. GraphQL errors, including
+responses containing partial data, are reported rather than silently replacing
+the last complete section.
+
+### Copilot usage contract
+
+Reference checkout: `%USERPROFILE%\Projects\references\CodexBar`, revision
+`b202fc0c8ce7f6b39d6acc832f5cb15ede1e4dd2` (MIT licensed).
+Its Copilot provider confirms the same internal usage endpoint. The live GitHub
+response also includes newer quota/reset fields not modeled by that reference
+revision; this implementation follows the observed response rather than copying
+its older quota assumptions. No CodexBar code or artwork is copied.
+
+The original native Copilot card uses `gh api copilot_internal/user`, not a
+Copilot CLI subprocess or a separate OAuth flow. The response login must match
+the initially verified GitHub account, and the existing final identity check
+still gates publication. Missing access, malformed responses and unknown quota
+schemas produce a section error; account mismatches reject the full refresh.
+Last-success usage is immutable, memory-only, account-scoped and visibly stale
+after a failed request. It shares the dashboard's single-flight refresh and
+shutdown cancellation rather than adding a timer or retry loop.
+
+`quota_snapshots` supplies premium interactions, chat and completions.
+`token_based_billing` selects the AI-credit label rather than legacy premium
+requests. Finite meters show `100 - percent_remaining`; the other counters are
+not assumed to be requests, credits or money. Unlimited quotas have no meter,
+absent quotas are omitted, and missing all supported quotas is an error.
+Quota-specific nonzero Unix reset times take precedence over
+`quota_reset_date_utc`, then `quota_reset_date`; missing dates are disclosed, not
+guessed. Reset times display as a relative countdown (days/hours, hours/minutes,
+or minutes), updated by the existing one-minute UI clock without another API
+request. An elapsed reset remains "Reset pending" until fresh data arrives.
+The card has a top divider, no redundant GitHub Copilot heading, and no unlimited
+chat/completion summary; the quota label, plan, meter and countdown remain.
+
+This is an undocumented GitHub endpoint, not the organization-admin usage
+metrics API. It reports account-wide quota rather than CLI-session consumption
+or a complete bill. CodexBar is a behavioral reference for the endpoint and
+quota presentation; its authentication, credential storage and macOS code are
+not ported. GitHub Tray still never retrieves, displays or saves tokens.
+
+### Pull requests and contributions
+
+The two PR queries each fetch metadata, the first 10 labels with their total,
+and `commits(last: 1).commit.statusCheckRollup`, including up to 100 check runs
+and legacy status contexts with their actual total. GitHub's rollup remains
+authoritative when context details are truncated; counts from a partial list
+must not be presented as complete progress. No rollup is "No checks", not success.
+Unknown, queued, running, cancelled, neutral, skipped, and action-required checks
+retain distinct states. PR metadata and checks are one immutable snapshot, so a
+refresh never attaches old checks to a new head commit. Each PR query verifies
+the GraphQL viewer in addition to the surrounding REST identity checks.
+The CLI boundary permits only the exact generated PR operations (validated login
+or repository/number references, fixed selections and limits); arbitrary GraphQL
+arguments and mutations remain rejected. There are no per-PR fan-out requests or
+new polling timers.
+
+My PRs includes open, closed, and merged authored PRs, ordered by update time.
+Reviews continues to show open requests awaiting the account's review.
+Activity first sorts and deduplicates the latest 30 events, then groups PR events,
+reviews, review comments, and issue comments on PRs by repository and PR number.
+Each group keeps its latest event time/action and the number of events in that
+fetched window. Non-PR activity is preserved as separate rows. One additional
+GraphQL batch fetches current details for at most 30 referenced PRs, reusing the
+same card data selection as the PR modes. Closed and merged PRs are included.
+Batch failures retain the previous activity section with an explicit stale
+warning; unavailable PRs are never replaced by invented titles, authors, or CI.
 
 The contribution graph is a separate data source: GraphQL returns the period
 total, week boundaries, daily dates/counts, and contribution intensity levels.
@@ -122,12 +188,28 @@ only changed user selections request a polite live-region announcement.
   selection, secondary metadata, relative timestamps, and footer actions using
   native Windows controls and acrylic rather than copying macOS chrome.
 - Compact, 420-DIP-wide taskbar-adjacent panel rather than a browser or full-size dashboard.
+- Header: bold primary-foreground GitHub handle above the secondary display name,
+  with the contribution total and `12 months` at the right. No app title, close
+  button, or Contributions heading. The chart shares the header's text edges,
+  with cell sizes increased proportionally to the wider drawing area.
+- Footer: Preferences, Refresh, and Quit only; no refresh-schedule or Escape hint.
 - Show on launch; closing or Escape returns to the tray. Quit explicitly exits.
 - Four native selectable modes with a virtualized list and clear loading, empty,
   unavailable, and stale states.
+- Activity, My PRs, and Reviews share an original native `PullRequestCard`, informed by
+  RepoBar's `PullRequestMenuItemView`: avatar, two-line title, compact metadata,
+  monospace branch direction, and label chips. The CI summary opens native
+  check details without activating the PR row. The component emits navigation
+  requests to its host rather than owning account verification or browser
+  launching; repository identity can be hidden when reused in repository details.
+  Open, Draft, Closed, and Merged have distinct badges/icons. PR state and review
+  decisions are separate from CI. Activity cards show the latest action and
+  grouped event count instead of repeating each transition. Refresh failures
+  visibly mark retained check status as stale. Non-PR activity and repository
+  rows stay unchanged.
 - A native contribution heatmap above the modes, with the real total
   and an accessible date range. Its borderless container shrinks with the preset
-  and keeps all seven rows visible (up to 154 DIPs for Large), using
+  and keeps all seven rows visible (up to 164 DIPs for Large), using
   pixel-aligned square-cell layout rather than bitmap scaling. Gesture and
   keyboard zoom are deferred. No zoom toolbar or month/day axis labels. Preferences offers S/M/L:
   Small fits the loaded year; Medium and Large preserve larger squares and scroll

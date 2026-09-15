@@ -33,7 +33,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         var failed = fixture.Session.State;
         SessionAssertions.Unverified(failed, "octocat");
         Assert.Equal("Signed out", failed.Error);
-        Assert.Equal(8, fixture.Api.Requests.Length);
+        Assert.Equal(9, fixture.Api.Requests.Length);
         SessionAssertions.Success(verified);
 
         var recovery = RefreshResponses.Success(revision: "recovered");
@@ -52,7 +52,7 @@ public sealed class DashboardRefreshSessionIdentityTests
 
         SessionAssertions.Success(fixture.Session.State, revision: "recovered");
         SessionAssertions.Unverified(failed, "octocat");
-        Assert.Equal(15, fixture.Api.Requests.Length);
+        Assert.Equal(17, fixture.Api.Requests.Length);
     }
 
     [Theory]
@@ -85,7 +85,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         SessionAssertions.Retained(previous, Assert.IsType<DashboardSnapshot>(state.Snapshot));
         SessionAssertions.Success(verified);
         SessionAssertions.Unverified(failed, "octocat");
-        Assert.Equal(15, fixture.Api.Requests.Length);
+        Assert.Equal(17, fixture.Api.Requests.Length);
     }
 
     [Theory]
@@ -128,7 +128,10 @@ public sealed class DashboardRefreshSessionIdentityTests
         Assert.Null(snapshot.Contributions.UpdatedAt);
         Assert.Equal("Offline", snapshot.Contributions.Error);
         Assert.False(snapshot.Contributions.IsStale);
-        Assert.Equal(identityOutage ? 15 : 14, fixture.Api.Requests.Length);
+        Assert.Null(snapshot.Copilot.Usage);
+        Assert.Null(snapshot.Copilot.UpdatedAt);
+        Assert.Equal("Offline", snapshot.Copilot.Error);
+        Assert.Equal(identityOutage ? 17 : 16, fixture.Api.Requests.Length);
         SessionAssertions.Success(original);
     }
 
@@ -153,7 +156,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         SessionAssertions.Unverified(fixture.Session.State, hasPrevious ? "octocat" : null);
         Assert.Equal("The GitHub account changed while loading contributions. Refresh again to load the current account.",
             fixture.Session.State.Error);
-        Assert.Equal(hasPrevious ? 13 : 6, fixture.Api.Requests.Length);
+        Assert.Equal(hasPrevious ? 15 : 7, fixture.Api.Requests.Length);
         Assert.Equal(hasPrevious ? 1 : 0, fixture.Api.Requests.Count(request => request.Route == ApiRoute.FinalUser));
 
         if (previous is not null)
@@ -196,7 +199,7 @@ public sealed class DashboardRefreshSessionIdentityTests
                 ? "The GitHub account changed during refresh. No new data was displayed. Refresh again to load the current account."
                 : "Final identity unavailable",
             fixture.Session.State.Error);
-        Assert.Equal(14, fixture.Api.Requests.Length);
+        Assert.Equal(16, fixture.Api.Requests.Length);
         Assert.Equal(ApiRoute.FinalUser, fixture.Api.Requests[^1].Route);
 
         var recovery = RefreshResponses.Success();
@@ -207,7 +210,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         Assert.Null(fixture.Session.State.Error);
         SessionAssertions.Retained(original, Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot));
         SessionAssertions.Success(originalState);
-        Assert.Equal(21, fixture.Api.Requests.Length);
+        Assert.Equal(24, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -222,6 +225,6 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
 
         SessionAssertions.Success(fixture.Session.State);
-        Assert.Equal(7, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Length);
     }
 }

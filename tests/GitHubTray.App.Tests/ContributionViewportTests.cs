@@ -57,6 +57,20 @@ public sealed class ContributionViewportTests
     [InlineData(1.25)]
     [InlineData(1.5)]
     [InlineData(2)]
+    public void PresetsGrowInProportionToTheExpandedChart(double scale)
+    {
+        const double expansion = 388.0 / 368.0;
+        var medium = ContributionViewport.GetCellLayout(scale, 388, 53, ContributionCellSizePreset.Medium);
+        var large = ContributionViewport.GetCellLayout(scale, 388, 53, ContributionCellSizePreset.Large);
+        Assert.Equal(7 * expansion, medium.CellSize, 8);
+        Assert.Equal(16 * expansion, large.CellSize, 8);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(1.25)]
+    [InlineData(1.5)]
+    [InlineData(2)]
     public void ContainerShrinksAlongWithTheSelectedPreset(double scale)
     {
         var small = ContributionViewport.GetCellLayout(scale, 366, 53, ContributionCellSizePreset.Small);

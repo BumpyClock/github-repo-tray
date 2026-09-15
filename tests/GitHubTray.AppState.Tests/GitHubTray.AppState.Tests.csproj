@@ -16,7 +16,9 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="..\GitHubTray.Core.Tests\CopilotTestData.cs" Link="Fixtures\CopilotTestData.cs" />
     <Compile Include="..\GitHubTray.Core.Tests\ContributionTestData.cs" Link="Fixtures\ContributionTestData.cs" />
+    <Compile Include="..\GitHubTray.Core.Tests\PullRequestTestData.cs" Link="Fixtures\PullRequestTestData.cs" />
     <ProjectReference Include="..\..\src\GitHubTray.AppState\GitHubTray.AppState.csproj" />
   </ItemGroup>
 

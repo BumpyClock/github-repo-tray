@@ -1,5 +1,6 @@
 using System.Collections;
 using GitHubTray.Core;
+using GitHubTray.Core.Tests;
 
 namespace GitHubTray.AppState.Tests;
 
@@ -42,7 +43,7 @@ public sealed class DashboardRefreshSessionSectionTests
         Assert.Null(snapshot.Contributions.UpdatedAt);
         Assert.False(snapshot.Contributions.IsStale);
         Assert.False(string.IsNullOrWhiteSpace(snapshot.Contributions.Error));
-        Assert.Equal(7, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -54,8 +55,8 @@ public sealed class DashboardRefreshSessionSectionTests
         var original = SessionAssertions.Success(originalState);
         var responses = RefreshResponses.Success(revision: "next");
         responses.Activity = responses.Activity with { Failure = new GitHubException("Offline") };
-        responses.ReviewRequests = new ApiReply("""{"incomplete_results":true,"items":[]}""");
-        responses.PullRequests = new ApiReply("""{"incomplete_results":false,"items":[]}""");
+        responses.ReviewRequests = new ApiReply("""{"errors":[{"message":"Partial results"}],"data":null}""");
+        responses.PullRequests = new ApiReply(PullRequestTestData.Empty().ToJsonString());
         responses.Repositories = new ApiReply("[]");
         responses.Contributions = RefreshResponses.Calendar("octocat", allZero: true);
         fixture.Api.Use(responses);
@@ -74,7 +75,7 @@ public sealed class DashboardRefreshSessionSectionTests
         Assert.Equal(original.ReviewRequests.Items.ToArray(), snapshot.ReviewRequests.Items.ToArray());
         Assert.Equal(original.ReviewRequests.UpdatedAt, snapshot.ReviewRequests.UpdatedAt);
         Assert.True(snapshot.ReviewRequests.IsStale);
-        Assert.Contains("incomplete", snapshot.ReviewRequests.Error);
+        Assert.Contains("could not load", snapshot.ReviewRequests.Error);
         foreach (var section in new[] { snapshot.PullRequests, snapshot.Repositories })
         {
             Assert.Empty(section.Items);
@@ -94,7 +95,7 @@ public sealed class DashboardRefreshSessionSectionTests
         Assert.Null(snapshot.Contributions.Error);
         Assert.False(snapshot.Contributions.IsStale);
         SessionAssertions.Success(originalState);
-        Assert.Equal(14, fixture.Api.Requests.Length);
+        Assert.Equal(16, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -128,7 +129,7 @@ public sealed class DashboardRefreshSessionSectionTests
         Assert.Equal(115, retained.TotalContributions);
         Assert.Equal(original.Contributions.Calendar!.Weeks.SelectMany(week => week.Days),
             retained.Weeks.SelectMany(week => week.Days));
-        Assert.Equal(14, fixture.Api.Requests.Length);
+        Assert.Equal(16, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -142,6 +143,9 @@ public sealed class DashboardRefreshSessionSectionTests
         {
             AssertReadOnly(section.Items);
         }
+        var pull = Assert.IsType<PullRequestDetails>(snapshot.PullRequests.Items[0].PullRequest);
+        AssertReadOnly<PullRequestLabel>(pull.Labels);
+        AssertReadOnly<PullRequestCheck>(pull.Checks.Items);
         var calendar = Assert.IsType<ContributionCalendar>(snapshot.Contributions.Calendar);
         AssertReadOnly(calendar.Weeks);
         Assert.All(calendar.Weeks, week => AssertReadOnly(week.Days));

@@ -32,7 +32,7 @@ public sealed class ContributionCalendarTests
         Assert.Null(section.Error);
         Assert.False(section.IsStale);
         AssertOtherSectionsLoaded(snapshot);
-        Assert.Equal(6, api.Endpoints.Count);
+        Assert.Equal(5, api.Endpoints.Count);
         Assert.Equal("user", api.Endpoints[0]);
         Assert.Equal("user", api.Endpoints[^1]);
         Assert.Equal(
@@ -210,7 +210,7 @@ public sealed class ContributionCalendarTests
     }
 
     [Fact]
-    public async Task AllFiveSectionsStartInParallelAfterTheUserHasResolved()
+    public async Task AllSixSectionsStartInParallelAfterTheUserHasResolved()
     {
         var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var started = 0;
@@ -218,7 +218,7 @@ public sealed class ContributionCalendarTests
         {
             BeforeSection = async cancellationToken =>
             {
-                if (Interlocked.Increment(ref started) == 5)
+                if (Interlocked.Increment(ref started) == 6)
                 {
                     allStarted.SetResult();
                 }
@@ -228,9 +228,10 @@ public sealed class ContributionCalendarTests
 
         var snapshot = await new DashboardService(api).RefreshAsync();
 
-        Assert.Equal(5, started);
+        Assert.Equal(6, started);
         Assert.Equal("user", api.Endpoints[0]);
         Assert.NotNull(snapshot.Contributions.Calendar);
+        Assert.NotNull(snapshot.Copilot.Usage);
         AssertOtherSectionsLoaded(snapshot);
     }
 
@@ -383,7 +384,7 @@ public sealed class ContributionCalendarTests
             }
             if (BeforeSection is not null) await BeforeSection(cancellationToken);
             if (FailRestSections) throw new GitHubException("Safe offline message");
-            if (endpoint.StartsWith("search/issues?", StringComparison.Ordinal)) return """{"items":[]}""";
+            if (endpoint == CopilotUsageParser.Endpoint) return CopilotTestData.Response(Login).ToJsonString();
             if (endpoint.StartsWith("users/", StringComparison.Ordinal) || endpoint.StartsWith("user/repos?", StringComparison.Ordinal)) return "[]";
             throw new InvalidOperationException($"Unexpected endpoint: {endpoint}");
         }
@@ -392,6 +393,12 @@ public sealed class ContributionCalendarTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Assert.Contains("user", Endpoints);
+            if (query.Contains("query PullRequests", StringComparison.Ordinal))
+            {
+                if (BeforeSection is not null) await BeforeSection(cancellationToken);
+                if (FailRestSections) throw new GitHubException("Safe offline message");
+                return PullRequestTestData.Empty(Login).ToJsonString();
+            }
             Queries.Add(query);
             if (BeforeSection is not null) await BeforeSection(cancellationToken);
             if (BeforeQuery is not null) await BeforeQuery(cancellationToken);

@@ -35,14 +35,14 @@ public sealed class DashboardRefreshSessionFailureTests
             SessionAssertions.Unverified(fixture.Session.State, "octocat");
             Assert.Equal("An unexpected refresh error occurred. Check GitHub CLI and try again.",
                 fixture.Session.State.Error);
-            var expectedRequests = 7 + RequestsThrough(phase);
+            var expectedRequests = 8 + RequestsThrough(phase);
             Assert.Equal(expectedRequests, fixture.Api.Requests.Length);
             SessionAssertions.Success(previous);
 
             fixture.Api.Use(RefreshResponses.Success(revision: "recovered"));
             await fixture.RefreshAsync();
             SessionAssertions.Success(fixture.Session.State, revision: "recovered");
-            Assert.Equal(expectedRequests + 7, fixture.Api.Requests.Length);
+            Assert.Equal(expectedRequests + 8, fixture.Api.Requests.Length);
         }
     }
 
@@ -71,14 +71,14 @@ public sealed class DashboardRefreshSessionFailureTests
         Assert.False(fixture.Session.State.IsRefreshing);
         Assert.False(fixture.Session.State.IsStopping);
         Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
-        var expectedRequests = 7 + RequestsThrough(phase);
+        var expectedRequests = 8 + RequestsThrough(phase);
         Assert.Equal(expectedRequests, fixture.Api.Requests.Length);
         SessionAssertions.Success(previous);
 
         fixture.Api.Use(RefreshResponses.Success(revision: "recovered"));
         await fixture.RefreshAsync();
         SessionAssertions.Success(fixture.Session.State, revision: "recovered");
-        Assert.Equal(expectedRequests + 7, fixture.Api.Requests.Length);
+        Assert.Equal(expectedRequests + 8, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public sealed class DashboardRefreshSessionFailureTests
         fixture.Api.Use(RefreshResponses.Success(revision: "recovered"));
         await fixture.RefreshAsync();
         SessionAssertions.Success(fixture.Session.State, revision: "recovered");
-        Assert.Equal(8, fixture.Api.Requests.Length);
+        Assert.Equal(9, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -147,8 +147,8 @@ public sealed class DashboardRefreshSessionFailureTests
     private static int RequestsThrough(string phase) => phase switch
     {
         "initial" => 1,
-        "section" => 6,
-        "final" => 7,
+        "section" => 7,
+        "final" => 8,
         _ => throw new ArgumentOutOfRangeException(nameof(phase))
     };
 

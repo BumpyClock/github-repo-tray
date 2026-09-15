@@ -42,14 +42,14 @@ public sealed class DashboardRefreshSessionLifecycleTests
         Assert.True(session.State.IsRefreshing);
         Assert.False(session.State.IsAccountVerified);
         Assert.Null(session.State.Snapshot);
-        Assert.Equal(7, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Length);
         Assert.Equal(ApiRoute.FinalUser, fixture.Api.Requests[^1].Route);
         finalIdentity.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
 
         SessionAssertions.Success(session.State);
-        Assert.Contains(fixture.Api.Requests, request => request.Target.Contains("author%3Aoctocat", StringComparison.Ordinal));
-        Assert.Contains(fixture.Api.Requests, request => request.Target.Contains("review-requested%3Aoctocat", StringComparison.Ordinal));
+        Assert.Contains(fixture.Api.Requests, request => request.Target.Contains("author:octocat", StringComparison.Ordinal));
+        Assert.Contains(fixture.Api.Requests, request => request.Target.Contains("review-requested:octocat", StringComparison.Ordinal));
         Assert.False(initial.IsRefreshing);
         Assert.Null(initial.Snapshot);
         Assert.True(loading.IsRefreshing);
@@ -87,8 +87,8 @@ public sealed class DashboardRefreshSessionLifecycleTests
         await first.WaitAsync(RefreshSessionFixture.Timeout);
 
         SessionAssertions.Success(fixture.Session.State);
-        Assert.Equal(7, fixture.Api.Requests.Length);
-        Assert.Equal(7, fixture.Api.Requests.Select(request => request.Route).Distinct().Count());
+        Assert.Equal(8, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Select(request => request.Route).Distinct().Count());
     }
 
     [Fact]
@@ -112,7 +112,7 @@ public sealed class DashboardRefreshSessionLifecycleTests
         Assert.Equal(2, nested.Count);
         Assert.All(nested, task => Assert.Same(refresh, task));
         SessionAssertions.Success(fixture.Session.State);
-        Assert.Equal(7, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public sealed class DashboardRefreshSessionLifecycleTests
             await refresh.WaitAsync(RefreshSessionFixture.Timeout);
 
             SessionAssertions.Success(fixture.Session.State, revision: revision);
-            Assert.Equal((round + 1) * 7, fixture.Api.Requests.Length);
+            Assert.Equal((round + 1) * 8, fixture.Api.Requests.Length);
         }
 
         var gate = fixture.Gate();
@@ -139,11 +139,11 @@ public sealed class DashboardRefreshSessionLifecycleTests
         await gate.EnteredAsync();
         Assert.False(pending.IsCompleted);
         Assert.Same(pending, fixture.Session.RefreshAsync());
-        Assert.Equal(22, fixture.Api.Requests.Length);
+        Assert.Equal(25, fixture.Api.Requests.Length);
         gate.Release();
         await pending.WaitAsync(RefreshSessionFixture.Timeout);
         SessionAssertions.Success(fixture.Session.State, revision: "gated");
-        Assert.Equal(28, fixture.Api.Requests.Length);
+        Assert.Equal(32, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -285,7 +285,7 @@ public sealed class DashboardRefreshSessionLifecycleTests
         Assert.True(refresh.IsCompletedSuccessfully);
         AssertStoppedState(fixture.Session.State, null);
         Assert.True(fixture.Session.RefreshAsync().IsCompletedSuccessfully);
-        Assert.Equal(7, fixture.Api.Requests.Length);
+        Assert.Equal(8, fixture.Api.Requests.Length);
     }
 
     [Fact]
@@ -307,7 +307,7 @@ public sealed class DashboardRefreshSessionLifecycleTests
 
         AssertStoppedState(fixture.Session.State, "octocat");
         Assert.True(fixture.Session.RefreshAsync().IsCompletedSuccessfully);
-        Assert.Equal(8, fixture.Api.Requests.Length);
+        Assert.Equal(9, fixture.Api.Requests.Length);
         SessionAssertions.Unverified(failed, "octocat");
         Assert.Equal("Signed out", failed.Error);
     }

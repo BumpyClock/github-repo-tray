@@ -12,9 +12,11 @@ internal readonly record struct ContributionCellLayout(
 
 internal static class ContributionViewport
 {
-    public const double PlotHeight = 154;
+    public const double PlotHeight = 164;
     public const double ScrollbarSpace = 12;
     public const double TopInset = 8;
+    // Removing the chart-only insets expands content from 368 to 388 DIPs in the 420-DIP panel.
+    private const double TextAlignedCellScale = 388.0 / 368.0;
 
     public static double GetScrollbarSpace(double contentWidth, double viewportWidth) =>
         contentWidth > viewportWidth + 0.01 ? ScrollbarSpace : 0;
@@ -24,14 +26,14 @@ internal static class ContributionViewport
     {
         var scale = rasterizationScale;
         var rowPixels = Math.Floor((PlotHeight - TopInset - ScrollbarSpace) * scale / 7);
-        var gapPixels = Math.Max(2, Math.Round(2 * scale));
+        var gapPixels = Math.Max(2, Math.Round(2 * TextAlignedCellScale * scale));
         var maximumCellPixels = Math.Max(1, rowPixels - gapPixels);
         var fittedCellPixels = Math.Max(1, viewportWidth * scale / Math.Max(1, weeks) - gapPixels);
         var baseCellPixels = preset switch
         {
             ContributionCellSizePreset.Small => fittedCellPixels,
-            ContributionCellSizePreset.Medium => 7 * scale,
-            ContributionCellSizePreset.Large => 16 * scale,
+            ContributionCellSizePreset.Medium => 7 * TextAlignedCellScale * scale,
+            ContributionCellSizePreset.Large => 16 * TextAlignedCellScale * scale,
             _ => throw new ArgumentOutOfRangeException(nameof(preset))
         };
         var cellPixels = Math.Clamp(baseCellPixels, 1, maximumCellPixels);

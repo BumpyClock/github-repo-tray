@@ -18,18 +18,15 @@ public sealed class DashboardService(IGitHubApi api)
             previous = null;
         }
 
-        var activity = LoadSectionAsync(
-            $"users/{Uri.EscapeDataString(user.Login)}/events?per_page={ItemLimit}",
-            ParseActivity, previous?.Activity, cancellationToken);
-        var authored = LoadSectionAsync(SearchEndpoint($"is:pr is:open author:{user.Login}"),
-            root => ParsePullRequests(root, reviewRequested: false), previous?.PullRequests, cancellationToken);
-        var reviews = LoadSectionAsync(SearchEndpoint($"is:pr is:open review-requested:{user.Login}"),
-            root => ParsePullRequests(root, reviewRequested: true), previous?.ReviewRequests, cancellationToken);
+        var activity = LoadActivityAsync(user.Login, previous?.Activity, cancellationToken);
+        var authored = LoadPullRequestsAsync(user.Login, false, previous?.PullRequests, cancellationToken);
+        var reviews = LoadPullRequestsAsync(user.Login, true, previous?.ReviewRequests, cancellationToken);
         var repositories = LoadSectionAsync(
             $"user/repos?sort=pushed&direction=desc&per_page={ItemLimit}&affiliation=owner,collaborator,organization_member",
             ParseRepositories, previous?.Repositories, cancellationToken);
         var contributions = LoadContributionsAsync(user.Login, previous?.Contributions, cancellationToken);
-        await Task.WhenAll(activity, authored, reviews, repositories, contributions).ConfigureAwait(false);
+        var copilot = LoadCopilotUsageAsync(user.Login, previous?.Copilot, cancellationToken);
+        await Task.WhenAll(activity, authored, reviews, repositories, contributions, copilot).ConfigureAwait(false);
         var verifiedUser = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(user.Login, verifiedUser.Login, StringComparison.OrdinalIgnoreCase))
         {
@@ -37,12 +34,84 @@ public sealed class DashboardService(IGitHubApi api)
         }
         return new DashboardSnapshot(user, await activity, await authored, await reviews, await repositories)
         {
-            Contributions = await contributions
+            Contributions = await contributions,
+            Copilot = await copilot
         };
     }
 
-    private static string SearchEndpoint(string query) =>
-        $"search/issues?q={Uri.EscapeDataString(query)}&sort=updated&order=desc&per_page={ItemLimit}";
+    private async Task<CopilotUsageSection> LoadCopilotUsageAsync(
+        string login, CopilotUsageSection? previous, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var json = await api.GetAsync(CopilotUsageParser.Endpoint, cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(json);
+            var usage = CopilotUsageParser.Parse(document.RootElement, login);
+            return new(usage, DateTimeOffset.UtcNow, null);
+        }
+        catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
+        {
+            return new(previous?.Usage, previous?.UpdatedAt, exception.Message);
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException or
+                                         InvalidOperationException or KeyNotFoundException or
+                                         OverflowException or ArgumentOutOfRangeException)
+        {
+            return new(previous?.Usage, previous?.UpdatedAt,
+                "GitHub returned an unexpected Copilot usage response. Refresh again or update GitHub Tray if this persists.");
+        }
+    }
+
+    private async Task<DashboardSection> LoadPullRequestsAsync(
+        string login, bool reviewRequested, DashboardSection? previous, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var json = await api.QueryAsync(PullRequestParser.Query(login, reviewRequested), cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(json);
+            var items = PullRequestParser.Parse(document.RootElement, login, reviewRequested);
+            return new DashboardSection(items, DateTimeOffset.UtcNow, null);
+        }
+        catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
+        {
+            return new DashboardSection(previous?.Items ?? [], previous?.UpdatedAt, exception.Message);
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException or
+                                         InvalidOperationException or KeyNotFoundException or OverflowException)
+        {
+            return new DashboardSection(previous?.Items ?? [], previous?.UpdatedAt,
+                "GitHub returned an unexpected response for pull requests and checks. Refresh again or update GitHub Tray if this persists.");
+        }
+    }
+
+    private async Task<DashboardSection> LoadActivityAsync(
+        string login, DashboardSection? previous, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var items = await ReadAsync($"users/{Uri.EscapeDataString(login)}/events?per_page={ItemLimit}",
+                ParseActivity, cancellationToken).ConfigureAwait(false);
+            var references = items.Where(item => item.PullRequestActivity is not null)
+                .Select(item => new ActivityPullRequestReference(item.Repository, item.PullRequestActivity!.Number)).ToArray();
+            if (references.Length > 0)
+            {
+                var json = await api.QueryAsync(ActivityPullRequestQuery.Query(references), cancellationToken).ConfigureAwait(false);
+                using var document = JsonDocument.Parse(json);
+                items = ActivityPullRequestQuery.Hydrate(document.RootElement, login, items);
+            }
+            return new DashboardSection(items, DateTimeOffset.UtcNow, null);
+        }
+        catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
+        {
+            return new DashboardSection(previous?.Items ?? [], previous?.UpdatedAt, exception.Message);
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException or
+                                         InvalidOperationException or KeyNotFoundException or OverflowException or ArgumentException)
+        {
+            return new DashboardSection(previous?.Items ?? [], previous?.UpdatedAt,
+                "GitHub returned an unexpected response for recent activity. Refresh again or update GitHub Tray if this persists.");
+        }
+    }
 
     private async Task<ContributionSection> LoadContributionsAsync(
         string login, ContributionSection? previous, CancellationToken cancellationToken)
@@ -125,34 +194,19 @@ public sealed class DashboardService(IGitHubApi api)
                 GitHubUrl(Text(repo, "html_url")));
         }).ToArray();
 
-    private static IReadOnlyList<DashboardItem> ParsePullRequests(JsonElement root, bool reviewRequested)
-    {
-        if (OptionalBool(root, "incomplete_results"))
-        {
-            throw new GitHubException("GitHub search returned incomplete results. Refresh again; previously loaded results are retained.");
-        }
-        return root.GetProperty("items").EnumerateArray().Take(ItemLimit).Select(pull =>
-        {
-            var url = GitHubUrl(Text(pull, "html_url"));
-            var path = url.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (path.Length < 4 || path[2] != "pull")
-            {
-                throw new JsonException("Expected a pull request URL.");
-            }
-            var number = pull.GetProperty("number").GetInt32();
-            if (number < 1)
-            {
-                throw new JsonException("Invalid pull request number.");
-            }
-            var detail = reviewRequested ? "Review requested" : OptionalBool(pull, "draft") ? "Draft pull request" : "Open pull request";
-            return new DashboardItem(url.AbsoluteUri, $"#{number} {Text(pull, "title")}",
-                $"{path[0]}/{path[1]}", detail, Date(pull, "updated_at"), url);
-        }).ToArray();
-    }
-
     private static IReadOnlyList<DashboardItem> ParseActivity(JsonElement root) =>
         root.EnumerateArray().Select(ParseEvent)
-            .OrderByDescending(item => item.UpdatedAt).Take(ItemLimit).ToArray();
+            .OrderByDescending(item => item.UpdatedAt).DistinctBy(item => item.Id).Take(ItemLimit)
+            .GroupBy(item => item.PullRequestActivity is { } pull
+                ? $"pr:{item.Repository}/{pull.Number}" : $"event:{item.Id}")
+            .Select(group =>
+            {
+                var latest = group.First();
+                return latest.PullRequestActivity is { } activity
+                    ? latest with { PullRequestActivity = activity with { EventCount = group.Count() } }
+                    : latest;
+            })
+            .ToArray();
 
     private static DashboardItem ParseEvent(JsonElement item)
     {
@@ -200,10 +254,29 @@ public sealed class DashboardService(IGitHubApi api)
                 }
             }
         }
-        return new DashboardItem(Text(item, "id"), title, repository, detail, Date(item, "created_at"), url);
+        PullRequestActivity? activity = null;
+        var isPull = payload.TryGetProperty("pull_request", out var pull) && pull.ValueKind == JsonValueKind.Object;
+        if (!isPull && type == "IssueCommentEvent" && payload.TryGetProperty("issue", out var issue) &&
+            issue.TryGetProperty("pull_request", out _))
+        {
+            pull = issue;
+            isPull = true;
+            title = "Commented on a pull request";
+        }
+        if (isPull)
+        {
+            var number = pull.GetProperty("number").GetInt32();
+            if (number < 1) throw new JsonException("Invalid activity pull request number.");
+            activity = new PullRequestActivity(number, title, 1);
+            url = new Uri($"{repositoryUrl.AbsoluteUri}/pull/{number}");
+        }
+        return new DashboardItem(Text(item, "id"), title, repository, detail, Date(item, "created_at"), url)
+        {
+            PullRequestActivity = activity
+        };
     }
 
-    private static Uri GitHubUrl(string value)
+    internal static Uri GitHubUrl(string value)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
             !string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) ||

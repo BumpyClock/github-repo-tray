@@ -10,7 +10,13 @@ public sealed record DashboardItem(
     string Repository,
     string Detail,
     DateTimeOffset UpdatedAt,
-    Uri Url);
+    Uri Url)
+{
+    public PullRequestDetails? PullRequest { get; init; }
+    public PullRequestActivity? PullRequestActivity { get; init; }
+}
+
+public sealed record PullRequestActivity(int Number, string LatestAction, int EventCount);
 
 public sealed record DashboardSection(
     IReadOnlyList<DashboardItem> Items,
@@ -28,6 +34,7 @@ public sealed record DashboardSnapshot(
     DashboardSection Repositories)
 {
     public ContributionSection Contributions { get; init; } = new(null, null, null);
+    public CopilotUsageSection Copilot { get; init; } = new(null, null, null);
 }
 
 public interface IGitHubApi

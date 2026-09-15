@@ -1,8 +1,10 @@
 using System.Runtime.InteropServices;
+using GitHubTray_App.Controls;
 using GitHubTray_App.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Input;
 using Windows.System;
 
@@ -55,7 +57,6 @@ public sealed partial class MainPage : Page
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => OpenSettings();
-    private void HideButton_Click(object sender, RoutedEventArgs e) => _window.HidePanel();
     private void RetryTrayButton_Click(object sender, RoutedEventArgs e) => _window.RetryTray();
     private async void QuitButton_Click(object sender, RoutedEventArgs e) => await _window.QuitAsync();
 
@@ -82,7 +83,7 @@ public sealed partial class MainPage : Page
 
     private void OnPageKeyDown(object sender, KeyRoutedEventArgs args)
     {
-        if (args.Key == VirtualKey.Escape)
+        if (args.Key == VirtualKey.Escape && !args.Handled)
         {
             args.Handled = true;
             _window.HidePanel();
@@ -105,14 +106,29 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private async void PullRequestCard_OpenChecksRequested(object? sender, PullRequestActionEventArgs args)
+    {
+        if (sender is not PullRequestCard card)
+            return;
+        var row = ViewModel.SelectedSection.Items.FirstOrDefault(candidate => candidate.Item.Id == args.PullRequestId);
+        // Resolve the identifier against the current view, not data retained by a
+        // popup after refresh/account changes. Authorization stays with the page.
+        if (row?.PullRequest is not { } presentation || !ReferenceEquals(card.Data, presentation))
+            return;
+        if (presentation.ChecksUri is { } uri)
+            await OpenRowAsync(row, uri);
+    }
+
     private async Task OpenRowAsync(DashboardRow row)
+        => await OpenRowAsync(row, row.Item.Url);
+
+    private async Task OpenRowAsync(DashboardRow row, Uri uri)
     {
         if (!ViewModel.IsAccountVerified || !ViewModel.CanOpenRow(row))
         {
             return;
         }
 
-        var uri = row.Item.Url;
         if (!uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps
             || !string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase)
             || !uri.IsDefaultPort || uri.UserInfo.Length != 0)
@@ -139,11 +155,18 @@ public sealed partial class MainPage : Page
         if (args.InRecycleQueue)
         {
             args.ItemContainer.ContextFlyout = null;
+            args.ItemContainer.ClearValue(AutomationProperties.NameProperty);
+            args.ItemContainer.ClearValue(AutomationProperties.AutomationIdProperty);
         }
         else if (args.Item is DashboardRow row)
         {
             AutomationProperties.SetAutomationId(args.ItemContainer, row.AutomationId);
-            AutomationProperties.SetName(args.ItemContainer, row.AccessibleName);
+            args.ItemContainer.SetBinding(AutomationProperties.NameProperty, new Binding
+            {
+                Source = row,
+                Path = new PropertyPath(nameof(DashboardRow.AccessibleName)),
+                Mode = BindingMode.OneWay
+            });
             var openItem = new MenuFlyoutItem
             {
                 Text = "Open on GitHub",

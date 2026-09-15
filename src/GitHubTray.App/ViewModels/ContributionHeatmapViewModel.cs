@@ -58,7 +58,7 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
         {
             Days = [];
             WeekCount = 0;
-            Summary = calendar is null ? "Not loaded" : $"{calendar.TotalContributions:N0} · last 12 months";
+            Summary = calendar is null ? "Not loaded" : $"{calendar.TotalContributions:N0} · 12 months";
             Range = "";
             RangeDescription = "";
             AccessibleSummary = calendar is null
@@ -75,7 +75,7 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
             day,
             (day.Date.DayNumber - firstSunday.DayNumber) / 7,
             (int)day.Date.DayOfWeek)).ToArray();
-        Summary = $"{calendar!.TotalContributions:N0} · last 12 months";
+        Summary = $"{calendar!.TotalContributions:N0} · 12 months";
         Range = $"{first.ToString("MMM yyyy", CultureInfo.CurrentCulture)} – {last.ToString("MMM yyyy", CultureInfo.CurrentCulture)}";
         RangeDescription = $"{first.ToString("D", CultureInfo.CurrentCulture)} through {last.ToString("D", CultureInfo.CurrentCulture)}";
         AccessibleSummary = $"{calendar.TotalContributions:N0} contributions in the last 12 months. {RangeDescription}. Sunday-first calendar.";

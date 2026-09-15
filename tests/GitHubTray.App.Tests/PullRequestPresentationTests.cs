@@ -1,0 +1,252 @@
+using System.Collections.Immutable;
+using GitHubTray.Core;
+using GitHubTray_App.ViewModels;
+
+namespace GitHubTray.App.Tests;
+
+public sealed class PullRequestPresentationTests
+{
+    private static readonly DateTimeOffset UpdatedAt = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData(CheckRollupState.Unknown, "Checks unknown")]
+    [InlineData(CheckRollupState.NoChecks, "No checks")]
+    [InlineData(CheckRollupState.Passed, "Checks unknown")]
+    [InlineData(CheckRollupState.Failed, "Checks unknown")]
+    [InlineData(CheckRollupState.Pending, "Checks unknown")]
+    public void MissingResultsNeverMeanPassed(CheckRollupState aggregate, string expected)
+    {
+        var vm = Present(Checks(aggregate));
+
+        Assert.Equal(expected, vm.ChecksSummary);
+        Assert.False(vm.HasChecks);
+        Assert.Equal("0 checks", vm.CheckCountLabel);
+        Assert.NotEmpty(vm.EmptyChecksMessage);
+    }
+
+    [Theory]
+    [InlineData(CheckState.Unknown, "Checks unknown", "Unknown")]
+    [InlineData(CheckState.Pending, "Checks pending", "Pending")]
+    [InlineData(CheckState.Running, "Checks running", "Running")]
+    [InlineData(CheckState.Passed, "Checks passed · 1", "Passed")]
+    [InlineData(CheckState.Failed, "Checks failed", "Failed")]
+    [InlineData(CheckState.Neutral, "Checks neutral · 1", "Neutral")]
+    [InlineData(CheckState.Skipped, "Checks skipped · 1", "Skipped")]
+    [InlineData(CheckState.Cancelled, "Checks cancelled · 1", "Cancelled")]
+    [InlineData(CheckState.ActionRequired, "Checks need action", "Action required")]
+    public void IndividualOutcomesAreNotCollapsedIntoSuccess(CheckState state, string summary, string word)
+    {
+        var vm = Present(Checks(CheckRollupState.Passed, state));
+
+        Assert.Equal(summary, vm.ChecksSummary);
+        Assert.Equal(word, Assert.Single(vm.Checks).State);
+        Assert.NotEmpty(vm.Checks[0].Glyph);
+        Assert.Contains(word, vm.Checks[0].AccessibleName);
+    }
+
+    [Fact]
+    public void SuccessfulAggregateCanContainNeutralAndSkippedWithoutClaimingAllPassed()
+    {
+        var vm = Present(Checks(CheckRollupState.Passed, CheckState.Passed, CheckState.Neutral, CheckState.Skipped));
+
+        Assert.Equal("Checks completed · mixed outcomes", vm.ChecksSummary);
+        Assert.Equal("1 passed · 1 neutral · 1 skipped", vm.CheckStateCounts);
+        Assert.Equal("3 checks", vm.CheckCountLabel);
+        Assert.False(vm.IsChecksTruncated);
+    }
+
+    [Theory]
+    [InlineData(CheckRollupState.Failed, "Checks failed · partial list")]
+    [InlineData(CheckRollupState.Pending, "Checks pending · partial list")]
+    [InlineData(CheckRollupState.Unknown, "Checks unknown · partial list")]
+    [InlineData(CheckRollupState.Passed, "Checks successful · partial list")]
+    public void TruncatedListUsesFullAggregateNotLoadedSuccesses(CheckRollupState aggregate, string summary)
+    {
+        var checks = Checks(aggregate, Enumerable.Repeat(CheckState.Passed, 100).ToArray()) with { TotalCount = 142 };
+        var vm = Present(checks);
+
+        Assert.Equal(summary, vm.ChecksSummary);
+        Assert.True(vm.IsChecksTruncated);
+        Assert.Equal("Showing 100 of 142 checks", vm.CheckCountLabel);
+        Assert.Contains("not exact progress", vm.ChecksExplanation);
+        Assert.DoesNotContain("100/142", vm.ChecksSummary);
+        Assert.DoesNotContain("passed", vm.ChecksSummary);
+    }
+
+    [Theory]
+    [InlineData(CheckRollupState.Failed, "Checks failed")]
+    [InlineData(CheckRollupState.Pending, "Checks pending")]
+    [InlineData(CheckRollupState.Unknown, "Checks unknown")]
+    public void FullAggregateEvidenceIsNotOverriddenByPassedItems(CheckRollupState aggregate, string summary)
+    {
+        Assert.Equal(summary, Present(Checks(aggregate, CheckState.Passed)).ChecksSummary);
+    }
+
+    [Fact]
+    public void StaleSuccessfulDataIsExplicitlyStaleEvenAfterClockUpdates()
+    {
+        var vm = Present(Checks(CheckRollupState.Passed, CheckState.Passed), isStale: true);
+
+        vm.UpdateRelativeTimestamp(UpdatedAt.AddHours(2));
+
+        Assert.Equal("Stale · Checks passed · 1", vm.ChecksSummary);
+        Assert.Contains("section refresh failed", vm.FreshnessDescription);
+        Assert.Equal("Last known head abcdef1", vm.HeadCommitLabel);
+        Assert.Contains("Stale", vm.ChecksAccessibleName);
+        Assert.Contains("Stale", vm.AccessibleName);
+        Assert.DoesNotContain("latest", vm.FreshnessDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("live", vm.FreshnessDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RefreshReplacementUsesNewCommitOutcomesLabelsAndFreshness()
+    {
+        var retained = Present(Checks(CheckRollupState.Failed, CheckState.Failed), isStale: true);
+        var refreshed = Present(Checks(CheckRollupState.Passed, CheckState.Passed) with { CommitOid = "1234567890" });
+
+        Assert.Equal("Stale · Checks failed", retained.ChecksSummary);
+        Assert.Equal("Checks passed · 1", refreshed.ChecksSummary);
+        Assert.Equal("Latest head 1234567", refreshed.HeadCommitLabel);
+        Assert.False(refreshed.IsStale);
+        Assert.Equal("1234567890", refreshed.HeadCommitToolTip);
+    }
+
+    [Fact]
+    public void LabelOverflowUsesActualTotalRatherThanLoadedNames()
+    {
+        var labels = Enumerable.Range(1, 10).Select(index => new PullRequestLabel($"label-{index}", "123abc")).ToImmutableArray();
+        var details = Details(Checks(CheckRollupState.NoChecks)) with { Labels = labels, LabelCount = 23 };
+        var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.Equal(["label-1", "label-2", "label-3"], vm.Labels.Select(label => label.Name));
+        Assert.Equal(23, vm.LabelCount);
+        Assert.Equal("+20", vm.AdditionalLabelsText);
+        Assert.Contains("Showing names for 10 of 23 labels", vm.LabelsToolTip);
+        Assert.Contains("label-10", vm.LabelsToolTip);
+        Assert.DoesNotContain("label-11", vm.LabelsToolTip);
+    }
+
+    [Fact]
+    public void EmptyAndSmallLabelSetsDoNotAddAnOverflowChip()
+    {
+        var empty = Present(Checks(CheckRollupState.NoChecks));
+        var details = Details(Checks(CheckRollupState.NoChecks)) with
+        {
+            Labels = [new("bug", "ffffff"), new("needs review", "000000")], LabelCount = 2
+        };
+        var small = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.False(empty.HasLabels);
+        Assert.False(empty.HasAdditionalLabels);
+        Assert.Equal("No labels", empty.LabelsToolTip);
+        Assert.True(small.HasLabels);
+        Assert.False(small.HasAdditionalLabels);
+        Assert.Equal("2 labels: bug, needs review", small.LabelsToolTip);
+    }
+
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("APPROVED", "Approved")]
+    [InlineData("CHANGES_REQUESTED", "Changes requested")]
+    [InlineData("REVIEW_REQUIRED", "Review required")]
+    public void DraftAndReviewDecisionAreIndependent(string? decision, string text)
+    {
+        var details = Details(Checks(CheckRollupState.NoChecks)) with { IsDraft = true, ReviewDecision = decision };
+        var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
+
+        Assert.True(vm.IsDraft);
+        Assert.Equal(text, vm.ReviewDecisionText);
+        Assert.Equal(decision is not null, vm.HasReviewDecision);
+        if (decision is null)
+            Assert.DoesNotContain("review required", vm.AccessibleName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ClockNotifiesMetadataAndAccessibleNameWithoutFetching()
+    {
+        var vm = Present(Checks(CheckRollupState.NoChecks));
+        var notifications = new List<string?>();
+        vm.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+
+        vm.UpdateRelativeTimestamp(UpdatedAt.AddMinutes(5));
+
+        Assert.Equal("#42 · @alex-dev · 5m ago", vm.Metadata);
+        Assert.Contains(nameof(PullRequestCardViewModel.Metadata), notifications);
+        Assert.Contains(nameof(PullRequestCardViewModel.AccessibleName), notifications);
+        Assert.Contains("5m ago", vm.AccessibleName);
+        Assert.Equal("AD", vm.AuthorInitials);
+        Assert.Equal("feature/pr-cards → main", vm.Branches);
+        Assert.Equal("owner/repository", vm.Repository);
+        Assert.Equal("2 comments", vm.CommentSummary);
+    }
+
+    [Fact]
+    public void FutureTimestampAndMissingHeadStayHonest()
+    {
+        var vm = Present(Checks(CheckRollupState.Unknown) with { CommitOid = null });
+        vm.UpdateRelativeTimestamp(UpdatedAt.AddMinutes(-10));
+
+        Assert.Equal("just now", vm.RelativeTimestamp);
+        Assert.Equal("Head commit unavailable", vm.HeadCommitLabel);
+        Assert.Equal("Checks unknown", vm.ChecksSummary);
+    }
+
+    [Theory]
+    [InlineData("https://github.com/owner/repository/pull/42")]
+    [InlineData("https://github.com/owner/repository/pull/42/")]
+    [InlineData("https://github.com/owner/repository/pull/42?tab=files#discussion")]
+    public void ChecksLinkIsCanonicalHttpsGitHubPath(string url)
+    {
+        var vm = new PullRequestCardViewModel(Item(Details(Checks(CheckRollupState.NoChecks))) with
+        {
+            Url = new Uri(url)
+        }, false);
+
+        Assert.True(vm.CanOpenChecks);
+        Assert.Equal("https://github.com/owner/repository/pull/42/checks", vm.ChecksUri?.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("http://github.com/owner/repository/pull/42")]
+    [InlineData("https://github.com.evil.test/owner/repository/pull/42")]
+    [InlineData("https://evil.test@github.com/owner/repository/pull/42")]
+    [InlineData("https://github.com:444/owner/repository/pull/42")]
+    [InlineData("https://github.com/owner/repository/issues/42")]
+    [InlineData("https://github.com/owner/repository/pull/43")]
+    [InlineData("https://github.com/owner/repository/pull/42/files")]
+    [InlineData("/owner/repository/pull/42")]
+    public void ChecksNavigationRejectsUnsafeOrWrongPrLinks(string url)
+    {
+        var vm = new PullRequestCardViewModel(Item(Details(Checks(CheckRollupState.NoChecks))) with
+        {
+            Url = new Uri(url, UriKind.RelativeOrAbsolute)
+        }, false);
+
+        Assert.False(vm.CanOpenChecks);
+        Assert.Null(vm.ChecksUri);
+    }
+
+    [Fact]
+    public void MissingCheckNameStillHasAccessibleState()
+    {
+        var vm = Present(new CommitChecks(null, CheckRollupState.Unknown, [new(" ", CheckState.Unknown)], 1));
+
+        Assert.Equal("Unnamed check: Unknown", Assert.Single(vm.Checks).AccessibleName);
+    }
+
+    private static PullRequestCardViewModel Present(CommitChecks checks, bool isStale = false) =>
+        new(Item(Details(checks)), isStale, UpdatedAt);
+
+    private static CommitChecks Checks(CheckRollupState state, params CheckState[] outcomes) =>
+        new("abcdef1234567890", state,
+            outcomes.Select((outcome, index) => new PullRequestCheck($"Check {index + 1}", outcome)).ToImmutableArray(),
+            outcomes.Length);
+
+    private static PullRequestDetails Details(CommitChecks checks) =>
+        new(42, "Add reusable pull request cards", "alex-dev", null, false,
+            "feature/pr-cards", "main", null, 2, [], 0, checks);
+
+    private static DashboardItem Item(PullRequestDetails details) =>
+        new("pr-42", "#42 Add reusable pull request cards", "owner/repository", "Open pull request",
+            UpdatedAt, new Uri("https://github.com/owner/repository/pull/42")) { PullRequest = details };
+}

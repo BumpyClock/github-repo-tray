@@ -14,31 +14,38 @@ public sealed partial class DashboardRow : ObservableObject
 {
     private readonly bool _isRepositoryFirst;
 
-    public DashboardRow(DashboardItem item, Symbol icon, bool isRepositoryFirst)
+    public DashboardRow(DashboardItem item, Symbol icon, bool isRepositoryFirst, bool isStale = false)
     {
         Item = item;
         Icon = icon;
         _isRepositoryFirst = isRepositoryFirst;
+        PullRequest = item.PullRequest is not null
+            ? new PullRequestCardViewModel(item, isStale) : null;
         UpdateRelativeTimestamp();
     }
 
     public DashboardItem Item { get; }
     public Symbol Icon { get; }
+    public PullRequestCardViewModel? PullRequest { get; }
     public string Heading => _isRepositoryFirst && !string.IsNullOrWhiteSpace(Item.Repository) ? Item.Repository : Item.Title;
     public string SecondaryText => _isRepositoryFirst ? Item.Title : Item.Repository;
     public string Detail => Item.Detail;
     public bool HasSecondaryText => !string.IsNullOrWhiteSpace(SecondaryText) && !string.Equals(Heading, SecondaryText, StringComparison.Ordinal);
     public bool HasDetail => !string.IsNullOrWhiteSpace(Detail) && !string.Equals(Detail, SecondaryText, StringComparison.Ordinal);
     public string Timestamp => Item.UpdatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
-    public string AccessibleName => $"{Item.Title}. {Item.Repository}. {Detail}. {Timestamp}. Open on GitHub.";
+    public string AccessibleName => PullRequest?.AccessibleName
+        ?? $"{Item.Title}. {Item.Repository}. {Detail}. {Timestamp}. Open on GitHub.";
     public string AutomationId => $"DashboardItem_{Item.Id}";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AccessibleName))]
     public partial string RelativeTimestamp { get; set; } = "";
 
     public void UpdateRelativeTimestamp()
     {
-        var elapsed = DateTimeOffset.UtcNow - Item.UpdatedAt;
+        var now = DateTimeOffset.UtcNow;
+        PullRequest?.UpdateRelativeTimestamp(now);
+        var elapsed = now - Item.UpdatedAt;
         RelativeTimestamp = elapsed.TotalMinutes < 1 ? "just now"
             : elapsed.TotalHours < 1 ? $"{(int)elapsed.TotalMinutes} min ago"
             : elapsed.TotalDays < 1 ? $"{(int)elapsed.TotalHours} hr ago"
@@ -90,7 +97,7 @@ public sealed partial class SectionViewModel : ObservableObject
         Items.Clear();
         foreach (var item in section.Items)
         {
-            Items.Add(new DashboardRow(item, _icon, _isRepositoryFirst));
+            Items.Add(new DashboardRow(item, _icon, _isRepositoryFirst, isStale: section.Error is not null));
         }
 
         Error = section.Error ?? "";
@@ -109,7 +116,7 @@ public sealed partial class DashboardViewModel : ObservableObject
     private readonly DispatcherQueueTimer _clockTimer;
     private readonly DispatcherQueueTimer _preferenceSaveTimer;
     private readonly CancellationTokenSource _lifetime = new();
-    // Redraw marker only; the session owns published-data eligibility and recovery.
+    // Last UI projection, never recovery data; the session owns publication eligibility.
     private DashboardSnapshot? _lastProjectedSnapshot;
     private Task? _initializeTask;
     private Task? _saveTask;
@@ -129,7 +136,7 @@ public sealed partial class DashboardViewModel : ObservableObject
         Sections =
         [
             new("Activity", "No recent activity returned for this account.", Symbol.Clock, isRepositoryFirst: true),
-            new("My PRs", "No open authored pull requests.", Symbol.Document),
+            new("My PRs", "No authored pull requests returned for this account.", Symbol.Document),
             new("Reviews", "No open pull requests awaiting your review.", Symbol.Comment),
             new("Repos", "No repositories returned for this account.", Symbol.Library)
         ];
@@ -178,7 +185,12 @@ public sealed partial class DashboardViewModel : ObservableObject
     public partial bool IsAccountVerified { get; private set; }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AccountHandle))]
+    [NotifyPropertyChangedFor(nameof(AccountDisplayName))]
     public partial string AccountLabel { get; set; } = "Checking GitHub CLI account…";
+
+    public string AccountHandle => _lastProjectedSnapshot is { } snapshot ? $"@{snapshot.User.Login}" : AccountLabel;
+    public string AccountDisplayName => _lastProjectedSnapshot?.User.DisplayName ?? "";
 
     [ObservableProperty]
     public partial string AccountDescription { get; set; } = "Uses the current github.com account resolved by GitHub CLI.";
@@ -425,6 +437,7 @@ public sealed partial class DashboardViewModel : ObservableObject
             ? $"{error} Previous data is not current and remains hidden until the account is verified."
             : "";
         IsRefreshing = state.IsRefreshing;
+        CopilotDisplay = CopilotUsageViewModel.Create(state.Snapshot?.Copilot, state.IsAccountVerified, state.IsRefreshing);
         NotifyEmptyState();
     }
 
@@ -573,6 +586,8 @@ public sealed partial class DashboardViewModel : ObservableObject
                 row.UpdateRelativeTimestamp();
             }
         }
+        var state = _refreshSession.State;
+        CopilotDisplay = CopilotUsageViewModel.Create(state.Snapshot?.Copilot, state.IsAccountVerified, state.IsRefreshing);
     }
 
     public Task ShutdownAsync() => _shutdownTask ??= ShutdownCoreAsync();

@@ -77,18 +77,9 @@
             </Style>
         </ResourceDictionary>
     </UserControl.Resources>
-    <StackPanel Spacing="4" Padding="2">
-        <Grid ColumnSpacing="8">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-            <TextBlock Text="Contributions" VerticalAlignment="Center" Style="{StaticResource BodyStrongTextBlockStyle}" AutomationProperties.HeadingLevel="Level2" />
-            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.Summary, Mode=OneWay}"
-                       AutomationProperties.AutomationId="ContributionSummary"
-                       AutomationProperties.Name="{x:Bind ViewModel.AccessibleSummary, Mode=OneWay}"
-                       HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}"
-                       TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </Grid>
-        <Grid x:Name="GraphContainer" Margin="0,4,0,0">
-                <Grid x:Name="PlotOverlay" Margin="8,8,8,0">
+    <StackPanel Spacing="4">
+        <Grid x:Name="GraphContainer">
+                <Grid x:Name="PlotOverlay" Margin="0,8,0,0">
                     <ScrollViewer x:Name="PlotScroll" Padding="0,0,0,12" IsTabStop="False" UseLayoutRounding="True"
                                   HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled"

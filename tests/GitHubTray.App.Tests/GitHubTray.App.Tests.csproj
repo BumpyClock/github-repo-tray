@@ -17,12 +17,16 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\CopilotUsageViewModel.cs"
+             Link="ViewModels\CopilotUsageViewModel.cs" />
     <ProjectReference Include="..\..\src\GitHubTray.Core\GitHubTray.Core.csproj" />
     <!-- Compile the real App ViewModel, including its toolkit-generated notifications, without WinUI. -->
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionHeatmapViewModel.cs"
              Link="ViewModels\ContributionHeatmapViewModel.cs" />
     <Compile Include="..\..\src\GitHubTray.App\ViewModels\ContributionViewport.cs"
              Link="ViewModels\ContributionViewport.cs" />
+    <Compile Include="..\..\src\GitHubTray.App\ViewModels\PullRequestCardViewModel.cs"
+             Link="ViewModels\PullRequestCardViewModel.cs" />
   </ItemGroup>
 
 </Project>

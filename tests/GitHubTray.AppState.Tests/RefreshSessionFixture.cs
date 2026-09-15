@@ -80,6 +80,7 @@ internal enum ApiRoute
     ReviewRequests,
     Repositories,
     Contributions,
+    Copilot,
     FinalUser
 }
 
@@ -128,6 +129,7 @@ internal sealed class RefreshResponses
     internal ApiReply ReviewRequests { get; set; } = new("");
     internal ApiReply Repositories { get; set; } = new("");
     internal ApiReply Contributions { get; set; } = new("");
+    internal ApiReply Copilot { get; set; } = new("");
     internal ApiReply FinalUser { get; set; } = new("");
 
     internal ApiReply For(ApiRoute route) => route switch
@@ -138,6 +140,7 @@ internal sealed class RefreshResponses
         ApiRoute.ReviewRequests => ReviewRequests,
         ApiRoute.Repositories => Repositories,
         ApiRoute.Contributions => Contributions,
+        ApiRoute.Copilot => Copilot,
         ApiRoute.FinalUser => FinalUser,
         _ => throw new ArgumentOutOfRangeException(nameof(route))
     };
@@ -155,19 +158,7 @@ internal sealed class RefreshResponses
     internal static RefreshResponses Success(string login = "octocat", string revision = "first")
     {
         var repository = $"{login}/{revision}";
-        var pull = new ApiReply(JsonSerializer.Serialize(new
-        {
-            incomplete_results = false,
-            items = new[]
-            {
-                new
-                {
-                    number = 42, title = $"Improve {revision}",
-                    html_url = $"https://github.com/{repository}/pull/42",
-                    updated_at = "2026-09-01T10:30:00Z", draft = false
-                }
-            }
-        }));
+        var pull = new ApiReply(PullRequestTestData.Response(login, revision).ToJsonString());
         return new RefreshResponses
         {
             InitialUser = User(login),
@@ -191,7 +182,8 @@ internal sealed class RefreshResponses
                     archived = false, updated_at = "2026-09-01T10:30:00Z"
                 }
             })),
-            Contributions = Calendar(login)
+            Contributions = Calendar(login),
+            Copilot = new ApiReply(CopilotTestData.Response(login).ToJsonString())
         };
     }
 
@@ -202,6 +194,7 @@ internal sealed class RefreshResponses
         ReviewRequests = ReviewRequests with { Failure = new GitHubException(message) };
         Repositories = Repositories with { Failure = new GitHubException(message) };
         Contributions = Contributions with { Failure = new GitHubException(message) };
+        Copilot = Copilot with { Failure = new GitHubException(message) };
     }
 }
 
@@ -244,14 +237,9 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
             var route = endpoint switch
             {
                 "user" => userCalls++ == 0 ? ApiRoute.InitialUser : ApiRoute.FinalUser,
+                CopilotUsageParser.Endpoint => ApiRoute.Copilot,
                 _ when endpoint.StartsWith("users/", StringComparison.Ordinal) => ApiRoute.Activity,
                 _ when endpoint.StartsWith("user/repos?", StringComparison.Ordinal) => ApiRoute.Repositories,
-                _ when endpoint.StartsWith("search/issues?", StringComparison.Ordinal) &&
-                       Uri.UnescapeDataString(endpoint).Contains("review-requested:", StringComparison.Ordinal) =>
-                    ApiRoute.ReviewRequests,
-                _ when endpoint.StartsWith("search/issues?", StringComparison.Ordinal) &&
-                       Uri.UnescapeDataString(endpoint).Contains("author:", StringComparison.Ordinal) =>
-                    ApiRoute.PullRequests,
                 _ => throw new InvalidOperationException($"Unexpected endpoint: {endpoint}")
             };
             reply = Record(route, endpoint);
@@ -264,7 +252,10 @@ internal sealed class ScriptedGitHubApi : IGitHubApi
         ApiReply reply;
         lock (sync)
         {
-            reply = Record(ApiRoute.Contributions, query);
+            var route = query.Contains("query PullRequests", StringComparison.Ordinal)
+                ? query.Contains("review-requested:", StringComparison.Ordinal) ? ApiRoute.ReviewRequests : ApiRoute.PullRequests
+                : ApiRoute.Contributions;
+            reply = Record(route, query);
         }
         return reply.SendAsync(cancellationToken);
     }
@@ -307,6 +298,10 @@ internal static class SessionAssertions
         Assert.NotNull(snapshot.Contributions.UpdatedAt);
         Assert.Null(snapshot.Contributions.Error);
         Assert.False(snapshot.Contributions.IsStale);
+        Assert.Equal(75.7, Assert.IsType<CopilotUsage>(snapshot.Copilot.Usage).Quotas[0].PercentRemaining);
+        Assert.NotNull(snapshot.Copilot.UpdatedAt);
+        Assert.Null(snapshot.Copilot.Error);
+        Assert.False(snapshot.Copilot.IsStale);
         return snapshot;
     }
 
@@ -341,5 +336,9 @@ internal static class SessionAssertions
         Assert.Equal(oldCalendar.TotalContributions, newCalendar.TotalContributions);
         Assert.Equal(oldCalendar.Weeks.Select(week => week.FirstDay), newCalendar.Weeks.Select(week => week.FirstDay));
         Assert.Equal(oldCalendar.Weeks.SelectMany(week => week.Days), newCalendar.Weeks.SelectMany(week => week.Days));
+        Assert.Equal(previous.Copilot.Usage, current.Copilot.Usage);
+        Assert.Equal(previous.Copilot.UpdatedAt, current.Copilot.UpdatedAt);
+        Assert.True(current.Copilot.IsStale);
+        Assert.Equal("Offline", current.Copilot.Error);
     }
 }

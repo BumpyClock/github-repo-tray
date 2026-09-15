@@ -18,9 +18,10 @@ public sealed class DashboardServiceTests
         Assert.Equal("#42 Improve tray", Assert.Single(snapshot.PullRequests.Items).Title);
         Assert.Equal("Review requested", Assert.Single(snapshot.ReviewRequests.Items).Detail);
         Assert.Equal("octocat/tray", Assert.Single(snapshot.Repositories.Items).Title);
-        Assert.Contains(api.Endpoints, endpoint => endpoint.Contains("author%3Aoctocat"));
-        Assert.Contains(api.Endpoints, endpoint => endpoint.Contains("review-requested%3Aoctocat"));
-        Assert.All(api.Endpoints.Where(endpoint => endpoint != "user"),
+        Assert.Contains(api.Queries, query => query.Contains("author:octocat"));
+        Assert.Contains(api.Queries, query => query.Contains("review-requested:octocat"));
+        Assert.NotNull(snapshot.Copilot.Usage);
+        Assert.All(api.Endpoints.Where(endpoint => endpoint != "user" && endpoint != CopilotUsageParser.Endpoint),
             endpoint => Assert.Contains("per_page=30", endpoint));
     }
 
@@ -87,7 +88,7 @@ public sealed class DashboardServiceTests
         var api = new FakeApi();
         var service = new DashboardService(api);
         var previous = hasPrevious ? await service.RefreshAsync() : null;
-        api.AfterQuery = () => api.Login = "different-account";
+        api.AfterCopilot = () => api.Login = "different-account";
 
         var error = await Assert.ThrowsAsync<GitHubAccountChangedException>(() => service.RefreshAsync(previous));
 
@@ -233,7 +234,7 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
-    public async Task IncompleteSearchResultsDoNotSilentlyReplaceTheLastCompleteResults()
+    public async Task PartialGraphQlResultsDoNotSilentlyReplaceTheLastCompleteResults()
     {
         var api = new FakeApi();
         var service = new DashboardService(api);
@@ -241,7 +242,7 @@ public sealed class DashboardServiceTests
         api.IncompleteSearch = true;
         var snapshot = await service.RefreshAsync(previous);
         Assert.True(snapshot.PullRequests.IsStale);
-        Assert.Contains("incomplete", snapshot.PullRequests.Error);
+        Assert.Contains("could not load", snapshot.PullRequests.Error);
         Assert.Same(previous.PullRequests.Items, snapshot.PullRequests.Items);
     }
 
@@ -267,12 +268,14 @@ public sealed class DashboardServiceTests
     private sealed class FakeApi : IGitHubApi
     {
         public List<string> Endpoints { get; } = [];
+        public List<string> Queries { get; } = [];
         public string Login { get; set; } = "octocat";
         public string? UserResponse { get; set; }
         public bool FailUser { get; set; }
         public bool FailActivity { get; set; }
         public bool IncompleteSearch { get; set; }
         public Action? AfterQuery { get; set; }
+        public Action? AfterCopilot { get; set; }
         public string PullUrl { get; set; } = "https://github.com/octocat/tray/pull/42";
         public string ActivityResponse { get; set; } =
             """[{"id":"1","type":"PushEvent","repo":{"name":"octocat/tray"},"payload":{"ref":"refs/heads/main"},"created_at":"2026-09-01T09:30:00Z"}]""";
@@ -280,6 +283,17 @@ public sealed class DashboardServiceTests
         public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Queries.Add(query);
+            if (query.Contains("query PullRequests", StringComparison.Ordinal))
+            {
+                var pulls = PullRequestTestData.Response(Login);
+                PullRequestTestData.Pull(pulls)["url"] = PullUrl;
+                if (IncompleteSearch)
+                {
+                    pulls["errors"] = System.Text.Json.Nodes.JsonNode.Parse("""[{"message":"partial response"}]""");
+                }
+                return Task.FromResult(pulls.ToJsonString());
+            }
             var response = ContributionTestData.Response(Login).ToJsonString();
             AfterQuery?.Invoke();
             return Task.FromResult(response);
@@ -289,6 +303,12 @@ public sealed class DashboardServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Endpoints.Add(endpoint);
+            if (endpoint == CopilotUsageParser.Endpoint)
+            {
+                var response = CopilotTestData.Response(Login).ToJsonString();
+                AfterCopilot?.Invoke();
+                return Task.FromResult(response);
+            }
             if (endpoint == "user")
             {
                 if (FailUser)
@@ -307,17 +327,6 @@ public sealed class DashboardServiceTests
                     throw new GitHubException("Offline");
                 }
                 return Task.FromResult(ActivityResponse);
-            }
-            if (endpoint.StartsWith("search/issues?", StringComparison.Ordinal))
-            {
-                return Task.FromResult(JsonSerializer.Serialize(new
-                {
-                    incomplete_results = IncompleteSearch,
-                    items = new[]
-                    {
-                        new { number = 42, title = "Improve tray", html_url = PullUrl, updated_at = "2026-09-01T10:30:00Z", draft = false }
-                    }
-                }));
             }
             if (endpoint.StartsWith("user/repos?", StringComparison.Ordinal))
             {

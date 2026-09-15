@@ -114,14 +114,18 @@ public sealed class GitHubCliApi : IGitHubApi
         if (process.ExitCode != 0)
         {
             // CLI stderr may contain sensitive diagnostics. Only expose known, fixed messages.
-            throw new GitHubException(DescribeFailure(error));
+            throw new GitHubException(DescribeFailure(error, endpoint));
         }
         return output;
     }
 
     private static void ValidateQuery(string query)
     {
-        const string message = "A single read-only GraphQL query without arguments or variables is required.";
+        if (!string.IsNullOrWhiteSpace(query) && PullRequestParser.IsSupportedQuery(query))
+        {
+            return;
+        }
+        const string message = "A supported read-only GraphQL query is required.";
         if (string.IsNullOrWhiteSpace(query))
         {
             throw new ArgumentException(message, nameof(query));
@@ -165,7 +169,7 @@ public sealed class GitHubCliApi : IGitHubApi
         }
     }
 
-    private static string DescribeFailure(string error)
+    private static string DescribeFailure(string error, string endpoint)
     {
         if (error.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
             error.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase))
@@ -178,6 +182,12 @@ public sealed class GitHubCliApi : IGitHubApi
             error.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase))
         {
             return "GitHub sign-in is unavailable or expired. Run 'gh auth login --hostname github.com' in a terminal, then refresh.";
+        }
+        if (endpoint == CopilotUsageParser.Endpoint &&
+            (error.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase) ||
+             error.Contains("HTTP 404", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Copilot usage is not accessible to the current gh account. Check its Copilot plan and organization access. Copilot CLI may use a different account; GitHub Tray does not read its credentials.";
         }
         if (error.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase))
         {
