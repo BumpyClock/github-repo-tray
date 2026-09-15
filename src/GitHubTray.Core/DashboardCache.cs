@@ -277,8 +277,8 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(record);
-        ValidateRecord(record);
         var operationGeneration = Volatile.Read(ref _generation);
+        ValidateRecord(record);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {

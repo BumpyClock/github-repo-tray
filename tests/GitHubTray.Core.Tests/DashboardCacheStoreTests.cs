@@ -387,6 +387,33 @@ public sealed class DashboardCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ClearInvalidatesWriteThatStartedBeforeValidationCompleted()
+    {
+        using var validationEntered = new ManualResetEventSlim();
+        using var releaseValidation = new ManualResetEventSlim();
+        var store = new JsonDashboardCacheStore(_directory);
+        var section = ListSection("pre-clear") with
+        {
+            Items = new BlockingList<DashboardItem>(
+                ListSection("pre-clear").Items,
+                validationEntered,
+                releaseValidation)
+        };
+
+        var write = Task.Run(() => store.WriteAsync(Record(activity: section)));
+        Assert.True(validationEntered.Wait(TimeSpan.FromSeconds(10)));
+
+        var clear = await store.ClearAsync();
+        releaseValidation.Set();
+        var result = await write;
+
+        Assert.True(clear.Succeeded);
+        Assert.False(result.Succeeded);
+        Assert.Equal(DashboardCacheDiagnosticKind.Invalidated, result.Diagnostic.Kind);
+        Assert.False(File.Exists(store.GetFilePath(Octocat)));
+    }
+
+    [Fact]
     public async Task ReflectionDisabledSourceGenerationRoundTripsTheCacheModel()
     {
         var store = new JsonDashboardCacheStore(_directory);
@@ -440,6 +467,29 @@ public sealed class DashboardCacheStoreTests : IDisposable
             [],
             0,
             new(null, CheckRollupState.NoChecks, [], 0));
+
+    private sealed class BlockingList<T>(
+        IReadOnlyList<T> items,
+        ManualResetEventSlim entered,
+        ManualResetEventSlim release) : IReadOnlyList<T>
+    {
+        public int Count
+        {
+            get
+            {
+                entered.Set();
+                if (!release.Wait(TimeSpan.FromSeconds(10)))
+                {
+                    throw new TimeoutException("The test did not release validation.");
+                }
+                return items.Count;
+            }
+        }
+
+        public T this[int index] => items[index];
+        public IEnumerator<T> GetEnumerator() => items.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     public void Dispose()
     {
