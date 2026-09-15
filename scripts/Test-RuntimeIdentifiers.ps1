@@ -12,6 +12,15 @@ $cases = @(
     @{ Platform = 'x64'; Runtime = 'win-arm64'; Expected = 'win-arm64' }
 )
 
+$runtimeIdentifiers = (& dotnet msbuild $Project -nologo -getProperty:RuntimeIdentifiers | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw 'RuntimeIdentifiers evaluation failed.'
+}
+if ($runtimeIdentifiers -cne 'win-x86;win-x64;win-arm64') {
+    throw "Expected restore support for all package architectures, received '$runtimeIdentifiers'."
+}
+Write-Output "PASS: Restore includes all package runtime identifiers."
+
 foreach ($case in $cases) {
     # Check the project's RID defaults independently of publish profiles.
     $arguments = @(
