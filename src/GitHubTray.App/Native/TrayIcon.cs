@@ -94,6 +94,34 @@ internal sealed class TrayIcon : IDisposable
     public event Action<TrayCommand>? CommandRequested;
     public event Action<string?>? AvailabilityChanged;
 
+    public void UpdateIcon(string iconPath)
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
+        var newIcon = NativeMethods.LoadImage(0, iconPath, 1, 32, 32, 0x10);
+        if (newIcon == 0)
+        {
+            throw new Win32Exception("The notification icon could not be loaded.");
+        }
+
+        if (IsAvailable)
+        {
+            var data = CreateData();
+            data.Icon = newIcon;
+            if (!NativeMethods.Shell_NotifyIcon(1, ref data))
+            {
+                NativeMethods.DestroyIcon(newIcon);
+                throw new Win32Exception("Windows did not accept the updated notification icon.");
+            }
+        }
+
+        var oldIcon = _icon;
+        _icon = newIcon;
+        if (oldIcon != 0)
+        {
+            NativeMethods.DestroyIcon(oldIcon);
+        }
+    }
+
     private NativeMethods.NotifyIconData CreateData() => new()
     {
         Size = (uint)Marshal.SizeOf<NativeMethods.NotifyIconData>(),

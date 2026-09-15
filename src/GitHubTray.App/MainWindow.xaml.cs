@@ -16,6 +16,8 @@ namespace GitHubTray_App;
 public sealed partial class MainWindow : Window
 {
     private const string WindowFrameError = "Windows could not remove the native window outline.";
+    private const string LightIconFileName = "AppIcon.ico";
+    private const string DarkIconFileName = "AppIconDark.ico";
     private readonly MainPage _page;
     private readonly DispatcherQueueTimer _dismissTimer;
     private TrayIcon? _trayIcon;
@@ -33,19 +35,21 @@ public sealed partial class MainWindow : Window
             DispatcherQueue);
         _page = new MainPage(ViewModel, this);
         PageHost.Child = _page;
-        var presenter = (OverlappedPresenter)AppWindow.Presenter;
+        var presenter = OverlappedPresenter.Create();
         presenter.SetBorderAndTitleBar(false, false);
         presenter.IsResizable = false;
         presenter.IsMaximizable = false;
         presenter.IsMinimizable = false;
         presenter.IsAlwaysOnTop = true;
+        AppWindow.SetPresenter(presenter);
         var cornerPreference = 2; // DWMWCP_ROUND; unsupported systems retain native square corners.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 33, ref cornerPreference, sizeof(int));
         var borderColor = -2; // DWMWA_COLOR_NONE: keep the native frame borderless.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 34, ref borderColor, sizeof(int));
         ConfigureBackdrop();
         AppWindow.IsShownInSwitchers = false;
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
+        RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
+        AppWindow.SetIcon(GetThemeIconPath());
         _dismissTimer = DispatcherQueue.CreateTimer();
         _dismissTimer.Interval = TimeSpan.FromMilliseconds(180);
         _dismissTimer.IsRepeating = false;
@@ -57,6 +61,10 @@ public sealed partial class MainWindow : Window
 
     public DashboardViewModel ViewModel { get; }
     private nint WindowHandle => WinRT.Interop.WindowNative.GetWindowHandle(this);
+    private string GetThemeIconPath() => Path.Combine(
+        AppContext.BaseDirectory,
+        "Assets",
+        RootGrid.ActualTheme == ElementTheme.Dark ? DarkIconFileName : LightIconFileName);
 
     private void ConfigureBackdrop()
     {
@@ -151,7 +159,7 @@ public sealed partial class MainWindow : Window
         _trayIcon = null;
         try
         {
-            _trayIcon = new TrayIcon(DispatcherQueue, Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
+            _trayIcon = new TrayIcon(DispatcherQueue, GetThemeIconPath());
             _trayIcon.ToggleRequested += TogglePanel;
             _trayIcon.CommandRequested += OnTrayCommandRequested;
             _trayIcon.AvailabilityChanged += OnTrayAvailabilityChanged;
@@ -163,6 +171,26 @@ public sealed partial class MainWindow : Window
             Debug.WriteLine($"Tray initialization failed ({exception.HResult:X8}).");
             ViewModel.TrayError = "Windows could not create the notification-area icon. Keep this panel open and choose Retry tray. You can quit from Settings.";
             AppWindow.IsShownInSwitchers = true;
+        }
+    }
+
+    private void RootGrid_ActualThemeChanged(FrameworkElement sender, object args)
+    {
+        var iconPath = GetThemeIconPath();
+        AppWindow.SetIcon(iconPath);
+        if (_trayIcon is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _trayIcon.UpdateIcon(iconPath);
+        }
+        catch (Win32Exception exception)
+        {
+            Debug.WriteLine($"Tray theme icon update failed ({exception.HResult:X8}).");
+            ViewModel.TrayError = "Windows could not update the notification-area icon for the current theme. Choose Retry tray.";
         }
     }
 
@@ -250,6 +278,7 @@ public sealed partial class MainWindow : Window
         _isQuitting = true;
         _dismissTimer.Stop();
         _dismissTimer.Tick -= DismissTimer_Tick;
+        RootGrid.ActualThemeChanged -= RootGrid_ActualThemeChanged;
         _trayIcon?.Dispose();
         _trayIcon = null;
         try
