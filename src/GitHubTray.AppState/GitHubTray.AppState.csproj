@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IsAotCompatible>true</IsAotCompatible>
-    <Platforms>AnyCPU;ARM64;x64</Platforms>
+    <Platforms>AnyCPU;ARM64;x64;x86</Platforms>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\GitHubTray.Core\GitHubTray.Core.csproj" />
