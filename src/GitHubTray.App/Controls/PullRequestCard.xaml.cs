@@ -7,11 +7,14 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.System;
 using Windows.UI;
+using Windows.UI.ViewManagement;
 
 namespace GitHubTray_App.Controls;
 
 public sealed partial class PullRequestCard : UserControl
 {
+    private static readonly AccessibilitySettings Accessibility = new();
+
     private PullRequestCardViewModel? _flyoutData;
 
     public static readonly DependencyProperty DataProperty = DependencyProperty.Register(
@@ -44,15 +47,48 @@ public sealed partial class PullRequestCard : UserControl
     public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public static Visibility Hidden(bool value) => value ? Visibility.Collapsed : Visibility.Visible;
 
-    public static Brush LabelDotBrush(string? color)
+    public static Brush LabelDotBrush(string? color) => new SolidColorBrush(LabelColor(color));
+
+    /// <summary>Tints a chip with its own label color, which high contrast replaces outright.</summary>
+    public static Brush LabelFillBrush(string? color) =>
+        Accessibility.HighContrast || color is null
+            ? ThemeBrush("ControlAltFillColorSecondaryBrush")
+            : new SolidColorBrush(LabelColor(color)) { Opacity = 0.16 };
+
+    public static Brush LabelStrokeBrush(string? color)
+    {
+        if (Accessibility.HighContrast) return ThemeBrush("SystemColorWindowTextColorBrush");
+        return color is null
+            ? ThemeBrush("ControlStrokeColorDefaultBrush")
+            : new SolidColorBrush(LabelColor(color)) { Opacity = 0.55 };
+    }
+
+    /// <summary>Status color for a single check, using the same palette as the rollup chip.</summary>
+    public static Brush ToneBrush(StatusTone tone) => ThemeBrush(tone switch
+    {
+        StatusTone.Success => "SystemFillColorSuccessBrush",
+        StatusTone.Failure => "SystemFillColorCriticalBrush",
+        StatusTone.Caution => "SystemFillColorCautionBrush",
+        StatusTone.Progress => "SystemFillColorAttentionBrush",
+        _ => "TextFillColorSecondaryBrush"
+    });
+
+    private static Color LabelColor(string? color)
     {
         // Core validates label colors; retaining a fallback also makes this control safe
         // to use with independently constructed presentation data.
-        return new SolidColorBrush(color is { Length: 6 } && uint.TryParse(color, NumberStyles.HexNumber,
+        return color is { Length: 6 } && uint.TryParse(color, NumberStyles.HexNumber,
             CultureInfo.InvariantCulture, out var rgb)
             ? Color.FromArgb(255, (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)
-            : Color.FromArgb(255, 128, 128, 128));
+            : Color.FromArgb(255, 128, 128, 128);
     }
+
+    // Chips are rebuilt whenever their card's data changes, so resolving the current
+    // theme's brush once per chip is enough; a missing key must never crash a card.
+    private static Brush ThemeBrush(string key) =>
+        Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush
+            ? brush
+            : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
 
     private static void OnDataChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
@@ -74,8 +110,12 @@ public sealed partial class PullRequestCard : UserControl
         }
     }
 
-    private void UpdateStateAppearance() =>
+    private void UpdateStateAppearance()
+    {
         VisualStateManager.GoToState(this, Data?.StateLabel ?? "Draft", useTransitions: false);
+        VisualStateManager.GoToState(this, Data?.ChecksVisualState ?? "ChecksNeutral", useTransitions: false);
+        VisualStateManager.GoToState(this, Data?.ReviewVisualState ?? "ReviewNeutral", useTransitions: false);
+    }
 
     private void ChecksButton_Tapped(object sender, TappedRoutedEventArgs args) => args.Handled = true;
 

@@ -25,20 +25,22 @@ public sealed class PullRequestPresentationTests
     }
 
     [Theory]
-    [InlineData(CheckState.Unknown, "Checks unknown", "Unknown")]
-    [InlineData(CheckState.Pending, "Checks pending", "Pending")]
-    [InlineData(CheckState.Running, "Checks running", "Running")]
-    [InlineData(CheckState.Passed, "Checks passed · 1", "Passed")]
-    [InlineData(CheckState.Failed, "Checks failed", "Failed")]
-    [InlineData(CheckState.Neutral, "Checks neutral · 1", "Neutral")]
-    [InlineData(CheckState.Skipped, "Checks skipped · 1", "Skipped")]
-    [InlineData(CheckState.Cancelled, "Checks cancelled · 1", "Cancelled")]
-    [InlineData(CheckState.ActionRequired, "Checks need action", "Action required")]
-    public void IndividualOutcomesAreNotCollapsedIntoSuccess(CheckState state, string summary, string word)
+    [InlineData(CheckState.Unknown, "1 unknown", "Unknown", StatusTone.Caution)]
+    [InlineData(CheckState.Pending, "1 pending", "Pending", StatusTone.Progress)]
+    [InlineData(CheckState.Running, "1 running", "Running", StatusTone.Progress)]
+    [InlineData(CheckState.Passed, "1 passed", "Passed", StatusTone.Success)]
+    [InlineData(CheckState.Failed, "1 failed", "Failed", StatusTone.Failure)]
+    [InlineData(CheckState.Neutral, "1 neutral", "Neutral", StatusTone.Neutral)]
+    [InlineData(CheckState.Skipped, "1 skipped", "Skipped", StatusTone.Neutral)]
+    [InlineData(CheckState.Cancelled, "1 cancelled", "Cancelled", StatusTone.Caution)]
+    [InlineData(CheckState.ActionRequired, "1 awaiting action", "Action required", StatusTone.Caution)]
+    public void IndividualOutcomesAreNotCollapsedIntoSuccess(
+        CheckState state, string summary, string word, StatusTone tone)
     {
         var vm = Present(Checks(CheckRollupState.Passed, state));
 
         Assert.Equal(summary, vm.ChecksSummary);
+        Assert.Equal(tone, vm.ChecksTone);
         Assert.Equal(word, Assert.Single(vm.Checks).State);
         Assert.NotEmpty(vm.Checks[0].Glyph);
         Assert.Contains(word, vm.Checks[0].AccessibleName);
@@ -49,23 +51,37 @@ public sealed class PullRequestPresentationTests
     {
         var vm = Present(Checks(CheckRollupState.Passed, CheckState.Passed, CheckState.Neutral, CheckState.Skipped));
 
-        Assert.Equal("Checks completed · mixed outcomes", vm.ChecksSummary);
-        Assert.Equal("1 passed · 1 neutral · 1 skipped", vm.CheckStateCounts);
+        // Named outcomes, never a vague "mixed" verdict and never "passed".
+        Assert.Equal("1 neutral · 1 skipped · 1 passed", vm.ChecksSummary);
+        Assert.Equal(StatusTone.Neutral, vm.ChecksTone);
+        Assert.Equal("1 neutral · 1 skipped · 1 passed", vm.CheckStateCounts);
         Assert.Equal("3 checks", vm.CheckCountLabel);
         Assert.False(vm.IsChecksTruncated);
     }
 
+    [Fact]
+    public void FailuresLeadTheSummaryAheadOfPassingChecks()
+    {
+        var vm = Present(Checks(CheckRollupState.Failed,
+            CheckState.Passed, CheckState.Failed, CheckState.Passed, CheckState.Running));
+
+        Assert.Equal("1 failed · 1 running · 2 passed", vm.ChecksSummary);
+        Assert.Equal(StatusTone.Failure, vm.ChecksTone);
+    }
+
     [Theory]
-    [InlineData(CheckRollupState.Failed, "Checks failed · partial list")]
-    [InlineData(CheckRollupState.Pending, "Checks pending · partial list")]
-    [InlineData(CheckRollupState.Unknown, "Checks unknown · partial list")]
-    [InlineData(CheckRollupState.Passed, "Checks successful · partial list")]
-    public void TruncatedListUsesFullAggregateNotLoadedSuccesses(CheckRollupState aggregate, string summary)
+    [InlineData(CheckRollupState.Failed, "Checks failed · partial list", StatusTone.Failure)]
+    [InlineData(CheckRollupState.Pending, "Checks pending · partial list", StatusTone.Progress)]
+    [InlineData(CheckRollupState.Unknown, "Checks unknown · partial list", StatusTone.Caution)]
+    [InlineData(CheckRollupState.Passed, "Checks successful · partial list", StatusTone.Neutral)]
+    public void TruncatedListUsesFullAggregateNotLoadedSuccesses(
+        CheckRollupState aggregate, string summary, StatusTone tone)
     {
         var checks = Checks(aggregate, Enumerable.Repeat(CheckState.Passed, 100).ToArray()) with { TotalCount = 142 };
         var vm = Present(checks);
 
         Assert.Equal(summary, vm.ChecksSummary);
+        Assert.Equal(tone, vm.ChecksTone);
         Assert.True(vm.IsChecksTruncated);
         Assert.Equal("Showing 100 of 142 checks", vm.CheckCountLabel);
         Assert.Contains("not exact progress", vm.ChecksExplanation);
@@ -74,12 +90,26 @@ public sealed class PullRequestPresentationTests
     }
 
     [Theory]
-    [InlineData(CheckRollupState.Failed, "Checks failed")]
-    [InlineData(CheckRollupState.Pending, "Checks pending")]
-    [InlineData(CheckRollupState.Unknown, "Checks unknown")]
-    public void FullAggregateEvidenceIsNotOverriddenByPassedItems(CheckRollupState aggregate, string summary)
+    [InlineData(CheckRollupState.Failed, "Checks failed · 1 passed", StatusTone.Failure)]
+    [InlineData(CheckRollupState.Pending, "Checks pending · 1 passed", StatusTone.Progress)]
+    [InlineData(CheckRollupState.Unknown, "Checks unknown · 1 passed", StatusTone.Caution)]
+    [InlineData(CheckRollupState.NoChecks, "Checks unknown · 1 passed", StatusTone.Caution)]
+    public void FullAggregateEvidenceIsNotOverriddenByPassedItems(
+        CheckRollupState aggregate, string summary, StatusTone tone)
     {
-        Assert.Equal(summary, Present(Checks(aggregate, CheckState.Passed)).ChecksSummary);
+        var vm = Present(Checks(aggregate, CheckState.Passed));
+
+        Assert.Equal(summary, vm.ChecksSummary);
+        Assert.Equal(tone, vm.ChecksTone);
+    }
+
+    [Fact]
+    public void LoadedFailuresAlreadyExplainAFailedAggregate()
+    {
+        var vm = Present(Checks(CheckRollupState.Failed, CheckState.Failed, CheckState.Passed));
+
+        Assert.Equal("1 failed · 1 passed", vm.ChecksSummary);
+        Assert.DoesNotContain("Checks failed · 1 failed", vm.ChecksSummary);
     }
 
     [Fact]
@@ -89,7 +119,9 @@ public sealed class PullRequestPresentationTests
 
         vm.UpdateRelativeTimestamp(UpdatedAt.AddHours(2));
 
-        Assert.Equal("Stale · Checks passed · 1", vm.ChecksSummary);
+        Assert.Equal("Stale · 1 passed", vm.ChecksSummary);
+        // Stale results describe an older commit, so they never present as settled.
+        Assert.Equal(StatusTone.Caution, vm.ChecksTone);
         Assert.Contains("section refresh failed", vm.FreshnessDescription);
         Assert.Equal("Last known head abcdef1", vm.HeadCommitLabel);
         Assert.Contains("Stale", vm.ChecksAccessibleName);
@@ -104,8 +136,9 @@ public sealed class PullRequestPresentationTests
         var retained = Present(Checks(CheckRollupState.Failed, CheckState.Failed), isStale: true);
         var refreshed = Present(Checks(CheckRollupState.Passed, CheckState.Passed) with { CommitOid = "1234567890" });
 
-        Assert.Equal("Stale · Checks failed", retained.ChecksSummary);
-        Assert.Equal("Checks passed · 1", refreshed.ChecksSummary);
+        Assert.Equal("Stale · 1 failed", retained.ChecksSummary);
+        Assert.Equal("1 passed", refreshed.ChecksSummary);
+        Assert.Equal(StatusTone.Success, refreshed.ChecksTone);
         Assert.Equal("Latest head 1234567", refreshed.HeadCommitLabel);
         Assert.False(refreshed.IsStale);
         Assert.Equal("1234567890", refreshed.HeadCommitToolTip);
@@ -118,9 +151,14 @@ public sealed class PullRequestPresentationTests
         var details = Details(Checks(CheckRollupState.NoChecks)) with { Labels = labels, LabelCount = 23 };
         var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
 
-        Assert.Equal(["label-1", "label-2", "label-3"], vm.Labels.Select(label => label.Name));
+        Assert.Equal(
+            ["label-1", "label-2", "label-3", "label-4", "label-5", "label-6", "+17"],
+            vm.LabelChips.Select(chip => chip.Text));
         Assert.Equal(23, vm.LabelCount);
-        Assert.Equal("+20", vm.AdditionalLabelsText);
+        Assert.Equal(17, vm.AdditionalLabelCount);
+        // The overflow chip carries no label color, so it never fakes one.
+        Assert.False(vm.LabelChips[^1].HasColor);
+        Assert.All(vm.LabelChips.Take(6), chip => Assert.Equal("123abc", chip.Color));
         Assert.Contains("Showing names for 10 of 23 labels", vm.LabelsToolTip);
         Assert.Contains("label-10", vm.LabelsToolTip);
         Assert.DoesNotContain("label-11", vm.LabelsToolTip);
@@ -137,26 +175,31 @@ public sealed class PullRequestPresentationTests
         var small = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
 
         Assert.False(empty.HasLabels);
-        Assert.False(empty.HasAdditionalLabels);
+        Assert.Empty(empty.LabelChips);
         Assert.Equal("No labels", empty.LabelsToolTip);
         Assert.True(small.HasLabels);
-        Assert.False(small.HasAdditionalLabels);
+        Assert.Equal(0, small.AdditionalLabelCount);
+        Assert.Equal(["bug", "needs review"], small.LabelChips.Select(chip => chip.Text));
         Assert.Equal("2 labels: bug, needs review", small.LabelsToolTip);
     }
 
     [Theory]
-    [InlineData(null, "")]
-    [InlineData("APPROVED", "Approved")]
-    [InlineData("CHANGES_REQUESTED", "Changes requested")]
-    [InlineData("REVIEW_REQUIRED", "Review required")]
-    public void DraftAndReviewDecisionAreIndependent(string? decision, string text)
+    [InlineData(null, "", StatusTone.Neutral)]
+    [InlineData("APPROVED", "Approved", StatusTone.Success)]
+    [InlineData("CHANGES_REQUESTED", "Changes requested", StatusTone.Failure)]
+    [InlineData("REVIEW_REQUIRED", "Review required", StatusTone.Progress)]
+    public void DraftAndReviewDecisionAreIndependent(string? decision, string text, StatusTone tone)
     {
         var details = Details(Checks(CheckRollupState.NoChecks)) with { IsDraft = true, ReviewDecision = decision };
         var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
 
         Assert.True(vm.IsDraft);
         Assert.Equal(text, vm.ReviewDecisionText);
+        Assert.Equal(tone, vm.ReviewDecisionTone);
         Assert.Equal(decision is not null, vm.HasReviewDecision);
+        // PR state and review decision drive independent visual states.
+        Assert.Equal("Draft", vm.StateLabel);
+        Assert.Equal($"Review{tone}", vm.ReviewVisualState);
         if (decision is null)
             Assert.DoesNotContain("review required", vm.AccessibleName, StringComparison.OrdinalIgnoreCase);
     }
@@ -178,6 +221,8 @@ public sealed class PullRequestPresentationTests
         Assert.Equal("feature/pr-cards → main", vm.Branches);
         Assert.Equal("owner/repository", vm.Repository);
         Assert.Equal("2 comments", vm.CommentSummary);
+        Assert.True(vm.HasComments);
+        Assert.Equal("2", vm.CommentCountText);
     }
 
     [Fact]
@@ -232,6 +277,7 @@ public sealed class PullRequestPresentationTests
         var vm = Present(new CommitChecks(null, CheckRollupState.Unknown, [new(" ", CheckState.Unknown)], 1));
 
         Assert.Equal("Unnamed check: Unknown", Assert.Single(vm.Checks).AccessibleName);
+        Assert.Equal(StatusTone.Caution, vm.Checks[0].Tone);
     }
 
     private static PullRequestCardViewModel Present(CommitChecks checks, bool isStale = false) =>

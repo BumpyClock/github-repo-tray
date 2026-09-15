@@ -207,6 +207,19 @@ only changed user selections request a polite live-region announcement.
   grouped event count instead of repeating each transition. Refresh failures
   visibly mark retained check status as stale. Non-PR activity and repository
   rows stay unchanged.
+- Card status reads as chips rather than prose. The PR state badge sits beside the
+  title, and the CI and review-decision chips share the footer row; all three are
+  tinted with the Windows success, caution, attention, critical, and neutral status
+  tokens so severity is visible before the text is read. Stale check results always
+  read as caution. Label chips wrap onto as many lines as they need, tinted with
+  their own GitHub color while names keep platform text brushes; high contrast
+  drops the tint. A trailing `+N` chip covers labels beyond the shown ones.
+- The CI chip names the loaded outcomes as counts, worst first
+  (`1 failed · 1 running · 2 passed`), instead of a vague verdict such as "mixed
+  outcomes". Counts never claim success: neutral, skipped, and cancelled stay
+  named, and an aggregate outcome that no loaded check shows is stated in front of
+  the counts (`Checks failed · 1 passed`). A truncated list still reports only the
+  aggregate.
 - A native contribution heatmap above the modes, with the real total
   and an accessible date range. Its borderless container shrinks with the preset
   and keeps all seven rows visible (up to 164 DIPs for Large), using

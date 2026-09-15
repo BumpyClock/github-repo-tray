@@ -6,12 +6,28 @@ using GitHubTray.Core;
 namespace GitHubTray_App.ViewModels;
 
 /// <summary>
+/// Severity a status chip communicates. Presentation maps this to platform status
+/// colors; it never upgrades an outcome the data did not report.
+/// </summary>
+public enum StatusTone
+{
+    Neutral,
+    Success,
+    Progress,
+    Caution,
+    Failure
+}
+
+/// <summary>
 /// Presentation of one PR at one section refresh. Only the clock changes in place;
 /// a new section result replaces this model, including its explicit freshness.
 /// No WinUI types, timers, fetching, or navigation live here.
 /// </summary>
 public sealed class PullRequestCardViewModel : ObservableObject
 {
+    // Chips wrap onto several lines, so more of them stay readable than in a single row.
+    private const int MaxLabelChips = 6;
+
     private string _relativeTimestamp = "";
 
     public PullRequestCardViewModel(DashboardItem item, bool isStale, DateTimeOffset? now = null)
@@ -43,12 +59,27 @@ public sealed class PullRequestCardViewModel : ObservableObject
             "CHANGES_REQUESTED" => "\uE7BA",
             _ => "\uE8F2"
         };
+        ReviewDecisionTone = details.ReviewDecision switch
+        {
+            "APPROVED" => StatusTone.Success,
+            "CHANGES_REQUESTED" => StatusTone.Failure,
+            "REVIEW_REQUIRED" => StatusTone.Progress,
+            _ => StatusTone.Neutral
+        };
+        CommentCount = details.CommentCount;
         CommentSummary = $"{details.CommentCount} {(details.CommentCount == 1 ? "comment" : "comments")}";
 
         var labels = details.Labels.IsDefault ? ImmutableArray<PullRequestLabel>.Empty : details.Labels;
-        Labels = labels.Take(3).ToArray();
         LabelCount = details.LabelCount;
-        AdditionalLabelCount = Math.Max(0, LabelCount - Labels.Count);
+        var shownLabels = labels.Take(MaxLabelChips).ToArray();
+        AdditionalLabelCount = Math.Max(0, LabelCount - shownLabels.Length);
+        var chips = shownLabels
+            .Select(label => new PullRequestLabelChip(label.Name, label.Color, label.Name))
+            .ToList();
+        if (AdditionalLabelCount > 0)
+            chips.Add(new PullRequestLabelChip($"+{AdditionalLabelCount}", null,
+                $"{AdditionalLabelCount} more {(AdditionalLabelCount == 1 ? "label" : "labels")}"));
+        LabelChips = chips;
         LabelsToolTip = LabelCount == 0 ? "No labels"
             : $"{LabelCount} {(LabelCount == 1 ? "label" : "labels")}: {string.Join(", ", labels.Select(label => label.Name))}"
                 + (labels.Length < LabelCount ? $" · Showing names for {labels.Length} of {LabelCount} labels." : "");
@@ -60,13 +91,15 @@ public sealed class PullRequestCardViewModel : ObservableObject
         CheckCountLabel = IsChecksTruncated
             ? $"Showing {items.Length} of {checks.TotalCount} checks"
             : $"{items.Length} {(items.Length == 1 ? "check" : "checks")}";
-        var (summary, glyph) = SummarizeChecks(checks.State, items, IsChecksTruncated);
+        CheckStateCounts = FormatStateCounts(items);
+        var (summary, glyph, tone) = SummarizeChecks(checks.State, items, IsChecksTruncated, CheckStateCounts);
         ChecksSummary = IsStale ? $"Stale · {summary}" : summary;
         ChecksGlyph = IsStale ? "\uE7BA" : glyph;
-        CheckStateCounts = FormatStateCounts(items);
+        // Stale results describe an older commit, so they never present as settled.
+        ChecksTone = IsStale ? StatusTone.Caution : tone;
         ChecksExplanation = IsChecksTruncated
             ? $"{AggregateDescription(checks.State)} Individual outcomes below cover only the loaded checks, not exact progress."
-            : CheckStateCounts;
+            : AggregateDescription(checks.State);
         EmptyChecksMessage = checks.State == CheckRollupState.NoChecks && checks.TotalCount == 0
             ? "No checks were reported for this commit."
             : "Individual check results are unavailable. Missing results do not mean checks passed.";
@@ -105,14 +138,17 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public string Branches { get; }
     public string ReviewDecisionText { get; }
     public string ReviewDecisionGlyph { get; }
+    public StatusTone ReviewDecisionTone { get; }
+    public string ReviewVisualState => $"Review{ReviewDecisionTone}";
     public bool HasReviewDecision => ReviewDecisionText.Length != 0;
+    public int CommentCount { get; }
+    public bool HasComments => CommentCount > 0;
+    public string CommentCountText => CommentCount.ToString(CultureInfo.CurrentCulture);
     public string CommentSummary { get; }
-    public IReadOnlyList<PullRequestLabel> Labels { get; }
+    public IReadOnlyList<PullRequestLabelChip> LabelChips { get; }
     public int LabelCount { get; }
     public bool HasLabels => LabelCount > 0;
     public int AdditionalLabelCount { get; }
-    public bool HasAdditionalLabels => AdditionalLabelCount > 0;
-    public string AdditionalLabelsText => $"+{AdditionalLabelCount}";
     public string LabelsToolTip { get; }
     public IReadOnlyList<PullRequestCheckViewModel> Checks { get; }
     public bool HasChecks => Checks.Count != 0;
@@ -120,6 +156,8 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public string CheckCountLabel { get; }
     public string ChecksSummary { get; }
     public string ChecksGlyph { get; }
+    public StatusTone ChecksTone { get; }
+    public string ChecksVisualState => $"Checks{ChecksTone}";
     public string CheckStateCounts { get; }
     public string ChecksExplanation { get; }
     public string EmptyChecksMessage { get; }
@@ -187,8 +225,8 @@ public sealed class PullRequestCardViewModel : ObservableObject
             : $"{(int)(elapsed.TotalDays / 365)}y ago";
     }
 
-    private static (string Text, string Glyph) SummarizeChecks(
-        CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks, bool isTruncated)
+    private static (string Text, string Glyph, StatusTone Tone) SummarizeChecks(
+        CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks, bool isTruncated, string counts)
     {
         // GraphQL's aggregate covers checks we have not loaded. Never infer progress
         // or all-passed from the first page, even when every loaded check passed.
@@ -196,47 +234,91 @@ public sealed class PullRequestCardViewModel : ObservableObject
         {
             return aggregate switch
             {
-                CheckRollupState.Passed => ("Checks successful · partial list", "\uE9D9"),
-                CheckRollupState.Failed => ("Checks failed · partial list", "\uEA39"),
-                CheckRollupState.Pending => ("Checks pending · partial list", "\uE823"),
-                _ => ("Checks unknown · partial list", "\uE9CE")
+                CheckRollupState.Passed => ("Checks successful · partial list", "\uE9D9", StatusTone.Neutral),
+                CheckRollupState.Failed => ("Checks failed · partial list", "\uEA39", StatusTone.Failure),
+                CheckRollupState.Pending => ("Checks pending · partial list", "\uE823", StatusTone.Progress),
+                _ => ("Checks unknown · partial list", "\uE9CE", StatusTone.Caution)
             };
         }
         if (checks.Length == 0)
         {
             return aggregate == CheckRollupState.NoChecks
-                ? ("No checks", "\uE90A") : ("Checks unknown", "\uE9CE");
+                ? ("No checks", "\uE90A", StatusTone.Neutral)
+                : ("Checks unknown", "\uE9CE", StatusTone.Caution);
         }
-        // Preserve failure/pending aggregate evidence, including unexpected mismatches.
-        if (checks.Any(check => check.State == CheckState.ActionRequired))
-            return ("Checks need action", "\uE7BA");
-        if (aggregate == CheckRollupState.Failed || checks.Any(check => check.State == CheckState.Failed))
-            return ("Checks failed", "\uEA39");
-        if (checks.Any(check => check.State == CheckState.Running))
-            return ("Checks running", "\uE768");
-        if (aggregate == CheckRollupState.Pending || checks.Any(check => check.State == CheckState.Pending))
-            return ("Checks pending", "\uE823");
-        if (aggregate == CheckRollupState.Unknown || checks.Any(check => check.State == CheckState.Unknown))
-            return ("Checks unknown", "\uE9CE");
 
-        var distinctStates = checks.Select(check => check.State).Distinct().ToArray();
-        if (distinctStates.Length == 1)
-        {
-            var state = distinctStates[0];
-            // A success aggregate alone cannot turn neutral/skipped/cancelled into passed.
-            if (state != CheckState.Passed || aggregate == CheckRollupState.Passed)
-                return ($"Checks {PullRequestCheckViewModel.StateText(state).ToLowerInvariant()} · {checks.Length}",
-                    PullRequestCheckViewModel.StateGlyph(state));
-            return ("Checks unknown", "\uE9CE");
-        }
-        return checks.Any(check => check.State == CheckState.Cancelled)
-            ? ("Checks include cancelled", "\uE711")
-            : ("Checks completed · mixed outcomes", "\uE9D9");
+        // The loaded outcomes are reported as counts rather than one vague word. Evidence
+        // that only the aggregate carries is named in front of them instead of replacing them.
+        var unshown = UnshownAggregate(aggregate, checks);
+        var dominant = checks.OrderBy(check => SeverityRank(check.State)).First().State;
+        return (unshown is null ? counts : $"{unshown} · {counts}",
+            unshown is null ? PullRequestCheckViewModel.StateGlyph(dominant) : AggregateGlyph(aggregate),
+            ToneForChecks(aggregate, checks));
     }
 
+    /// <summary>
+    /// Names an aggregate outcome that none of the loaded checks show, so a success
+    /// aggregate can never hide a failure and a failure aggregate can never be hidden.
+    /// </summary>
+    private static string? UnshownAggregate(CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks) =>
+        aggregate switch
+        {
+            CheckRollupState.Failed when !checks.Any(check =>
+                check.State is CheckState.Failed or CheckState.ActionRequired) => "Checks failed",
+            CheckRollupState.Pending when !checks.Any(check =>
+                check.State is CheckState.Pending or CheckState.Running) => "Checks pending",
+            CheckRollupState.Unknown when !checks.Any(check => check.State == CheckState.Unknown) => "Checks unknown",
+            // GitHub reported no checks yet returned some; the real state is unknown.
+            CheckRollupState.NoChecks => "Checks unknown",
+            _ => null
+        };
+
+    private static StatusTone ToneForChecks(CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks)
+    {
+        if (aggregate == CheckRollupState.Failed || checks.Any(check => check.State == CheckState.Failed))
+            return StatusTone.Failure;
+        if (aggregate is CheckRollupState.Unknown or CheckRollupState.NoChecks
+            || checks.Any(check => check.State is CheckState.ActionRequired or CheckState.Cancelled or CheckState.Unknown))
+            return StatusTone.Caution;
+        if (aggregate == CheckRollupState.Pending
+            || checks.Any(check => check.State is CheckState.Pending or CheckState.Running))
+            return StatusTone.Progress;
+        // Neutral, skipped and cancelled results are completions, not successes.
+        return aggregate == CheckRollupState.Passed && checks.All(check => check.State == CheckState.Passed)
+            ? StatusTone.Success
+            : StatusTone.Neutral;
+    }
+
+    private static string AggregateGlyph(CheckRollupState state) => state switch
+    {
+        CheckRollupState.Failed => "\uEA39",
+        CheckRollupState.Pending => "\uE823",
+        _ => "\uE9CE"
+    };
+
+    /// <summary>Worst first, so the chip leads with the outcome that needs attention.</summary>
+    private static int SeverityRank(CheckState state) => state switch
+    {
+        CheckState.Failed => 0,
+        CheckState.ActionRequired => 1,
+        CheckState.Cancelled => 2,
+        CheckState.Unknown => 3,
+        CheckState.Running => 4,
+        CheckState.Pending => 5,
+        CheckState.Neutral => 6,
+        CheckState.Skipped => 7,
+        _ => 8
+    };
+
     private static string FormatStateCounts(ImmutableArray<PullRequestCheck> checks) =>
-        string.Join(" · ", checks.GroupBy(check => check.State).OrderBy(group => group.Key)
-            .Select(group => $"{group.Count()} {PullRequestCheckViewModel.StateText(group.Key).ToLowerInvariant()}"));
+        string.Join(" · ", checks.GroupBy(check => check.State).OrderBy(group => SeverityRank(group.Key))
+            .Select(group => $"{group.Count()} {CountWord(group.Key)}"));
+
+    private static string CountWord(CheckState state) => state switch
+    {
+        CheckState.ActionRequired => "awaiting action",
+        _ => PullRequestCheckViewModel.StateText(state).ToLowerInvariant()
+    };
 
     private static string AggregateDescription(CheckRollupState state) => state switch
     {
@@ -274,12 +356,33 @@ public sealed class PullRequestCardViewModel : ObservableObject
     }
 }
 
+/// <summary>One label chip, or the trailing overflow chip when labels did not fit.</summary>
+public sealed class PullRequestLabelChip(string text, string? color, string toolTip)
+{
+    public string Text { get; } = text;
+
+    /// <summary>GitHub's six-digit label color, or null for the overflow chip.</summary>
+    public string? Color { get; } = color;
+    public bool HasColor => Color is not null;
+    public string ToolTip { get; } = toolTip;
+}
+
 public sealed class PullRequestCheckViewModel(PullRequestCheck check)
 {
     public string Name { get; } = string.IsNullOrWhiteSpace(check.Name) ? "Unnamed check" : check.Name;
     public string State { get; } = StateText(check.State);
     public string Glyph { get; } = StateGlyph(check.State);
+    public StatusTone Tone { get; } = ToneFor(check.State);
     public string AccessibleName => $"{Name}: {State}";
+
+    internal static StatusTone ToneFor(CheckState state) => state switch
+    {
+        CheckState.Passed => StatusTone.Success,
+        CheckState.Failed => StatusTone.Failure,
+        CheckState.Pending or CheckState.Running => StatusTone.Progress,
+        CheckState.Cancelled or CheckState.ActionRequired or CheckState.Unknown => StatusTone.Caution,
+        _ => StatusTone.Neutral
+    };
 
     internal static string StateText(CheckState state) => state switch
     {

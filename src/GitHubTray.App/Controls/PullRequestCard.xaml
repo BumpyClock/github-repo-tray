@@ -5,30 +5,37 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:GitHubTray_App.Controls"
     xmlns:vm="using:GitHubTray_App.ViewModels"
-    xmlns:core="using:GitHubTray.Core"
     HorizontalContentAlignment="Stretch" IsTabStop="False">
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.ThemeDictionaries>
+                <!-- Merged is the one PR state Windows has no status color for. -->
                 <ResourceDictionary x:Key="Light">
-                    <StaticResource x:Key="PullRequestOpenForegroundBrush" ResourceKey="SystemFillColorSuccessBrush" />
-                    <StaticResource x:Key="PullRequestClosedForegroundBrush" ResourceKey="SystemFillColorCriticalBrush" />
-                    <StaticResource x:Key="PullRequestDraftForegroundBrush" ResourceKey="TextFillColorSecondaryBrush" />
                     <SolidColorBrush x:Key="PullRequestMergedForegroundBrush" Color="#6F42C1" />
+                    <SolidColorBrush x:Key="PullRequestMergedBackgroundBrush" Color="#6F42C1" Opacity="0.12" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
-                    <StaticResource x:Key="PullRequestOpenForegroundBrush" ResourceKey="SystemFillColorSuccessBrush" />
-                    <StaticResource x:Key="PullRequestClosedForegroundBrush" ResourceKey="SystemFillColorCriticalBrush" />
-                    <StaticResource x:Key="PullRequestDraftForegroundBrush" ResourceKey="TextFillColorSecondaryBrush" />
                     <SolidColorBrush x:Key="PullRequestMergedForegroundBrush" Color="#D2B7FF" />
+                    <SolidColorBrush x:Key="PullRequestMergedBackgroundBrush" Color="#A371F7" Opacity="0.20" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
-                    <StaticResource x:Key="PullRequestOpenForegroundBrush" ResourceKey="SystemColorWindowTextColorBrush" />
-                    <StaticResource x:Key="PullRequestClosedForegroundBrush" ResourceKey="SystemColorWindowTextColorBrush" />
-                    <StaticResource x:Key="PullRequestDraftForegroundBrush" ResourceKey="SystemColorWindowTextColorBrush" />
                     <StaticResource x:Key="PullRequestMergedForegroundBrush" ResourceKey="SystemColorWindowTextColorBrush" />
+                    <StaticResource x:Key="PullRequestMergedBackgroundBrush" ResourceKey="SystemFillColorNeutralBackgroundBrush" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
+
+            <!-- A chip-sized button: the tint lives on the chip inside, so the button's own
+                 hover, pressed, and focus visuals keep working on top of it. -->
+            <Style x:Key="ChipButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorTransparentBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource SubtleFillColorTransparentBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="MinWidth" Value="0" />
+                <Setter Property="MinHeight" Value="24" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+            </Style>
         </ResourceDictionary>
     </UserControl.Resources>
     <Border BorderThickness="0,0,0,1" Padding="0,10"
@@ -37,26 +44,105 @@
             <VisualStateGroup x:Name="PullRequestStates">
                 <VisualState x:Name="Open">
                     <VisualState.Setters>
-                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource PullRequestOpenForegroundBrush}" />
-                        <Setter Target="StateText.Foreground" Value="{ThemeResource PullRequestOpenForegroundBrush}" />
+                        <Setter Target="StatePill.Background" Value="{ThemeResource SystemFillColorSuccessBackgroundBrush}" />
+                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
+                        <Setter Target="StateText.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Draft">
                     <VisualState.Setters>
-                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource PullRequestDraftForegroundBrush}" />
-                        <Setter Target="StateText.Foreground" Value="{ThemeResource PullRequestDraftForegroundBrush}" />
+                        <Setter Target="StatePill.Background" Value="{ThemeResource SystemFillColorCautionBackgroundBrush}" />
+                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
+                        <Setter Target="StateText.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Closed">
                     <VisualState.Setters>
-                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource PullRequestClosedForegroundBrush}" />
-                        <Setter Target="StateText.Foreground" Value="{ThemeResource PullRequestClosedForegroundBrush}" />
+                        <Setter Target="StatePill.Background" Value="{ThemeResource SystemFillColorCriticalBackgroundBrush}" />
+                        <Setter Target="StateIcon.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+                        <Setter Target="StateText.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
                     </VisualState.Setters>
                 </VisualState>
                 <VisualState x:Name="Merged">
                     <VisualState.Setters>
+                        <Setter Target="StatePill.Background" Value="{ThemeResource PullRequestMergedBackgroundBrush}" />
                         <Setter Target="StateIcon.Foreground" Value="{ThemeResource PullRequestMergedForegroundBrush}" />
                         <Setter Target="StateText.Foreground" Value="{ThemeResource PullRequestMergedForegroundBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+            <!-- Check severity, kept separate from PR state and from the review decision. -->
+            <VisualStateGroup x:Name="ChecksToneStates">
+                <VisualState x:Name="ChecksNeutral">
+                    <VisualState.Setters>
+                        <Setter Target="ChecksChip.Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}" />
+                        <Setter Target="ChecksIcon.Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Setter Target="ChecksText.Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ChecksSuccess">
+                    <VisualState.Setters>
+                        <Setter Target="ChecksChip.Background" Value="{ThemeResource SystemFillColorSuccessBackgroundBrush}" />
+                        <Setter Target="ChecksIcon.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
+                        <Setter Target="ChecksText.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ChecksProgress">
+                    <VisualState.Setters>
+                        <Setter Target="ChecksChip.Background" Value="{ThemeResource SystemFillColorAttentionBackgroundBrush}" />
+                        <Setter Target="ChecksIcon.Foreground" Value="{ThemeResource SystemFillColorAttentionBrush}" />
+                        <Setter Target="ChecksText.Foreground" Value="{ThemeResource SystemFillColorAttentionBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ChecksCaution">
+                    <VisualState.Setters>
+                        <Setter Target="ChecksChip.Background" Value="{ThemeResource SystemFillColorCautionBackgroundBrush}" />
+                        <Setter Target="ChecksIcon.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
+                        <Setter Target="ChecksText.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ChecksFailure">
+                    <VisualState.Setters>
+                        <Setter Target="ChecksChip.Background" Value="{ThemeResource SystemFillColorCriticalBackgroundBrush}" />
+                        <Setter Target="ChecksIcon.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+                        <Setter Target="ChecksText.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+            <VisualStateGroup x:Name="ReviewToneStates">
+                <VisualState x:Name="ReviewNeutral">
+                    <VisualState.Setters>
+                        <Setter Target="ReviewChip.Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}" />
+                        <Setter Target="ReviewIcon.Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Setter Target="ReviewText.Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ReviewSuccess">
+                    <VisualState.Setters>
+                        <Setter Target="ReviewChip.Background" Value="{ThemeResource SystemFillColorSuccessBackgroundBrush}" />
+                        <Setter Target="ReviewIcon.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
+                        <Setter Target="ReviewText.Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ReviewProgress">
+                    <VisualState.Setters>
+                        <Setter Target="ReviewChip.Background" Value="{ThemeResource SystemFillColorAttentionBackgroundBrush}" />
+                        <Setter Target="ReviewIcon.Foreground" Value="{ThemeResource SystemFillColorAttentionBrush}" />
+                        <Setter Target="ReviewText.Foreground" Value="{ThemeResource SystemFillColorAttentionBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ReviewCaution">
+                    <VisualState.Setters>
+                        <Setter Target="ReviewChip.Background" Value="{ThemeResource SystemFillColorCautionBackgroundBrush}" />
+                        <Setter Target="ReviewIcon.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
+                        <Setter Target="ReviewText.Foreground" Value="{ThemeResource SystemFillColorCautionBrush}" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="ReviewFailure">
+                    <VisualState.Setters>
+                        <Setter Target="ReviewChip.Background" Value="{ThemeResource SystemFillColorCriticalBackgroundBrush}" />
+                        <Setter Target="ReviewIcon.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
+                        <Setter Target="ReviewText.Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}" />
                     </VisualState.Setters>
                 </VisualState>
             </VisualStateGroup>
@@ -71,74 +157,93 @@
                            Initials="{x:Bind Data.AuthorInitials, Mode=OneWay}"
                            AutomationProperties.AccessibilityView="Raw" />
             <StackPanel Grid.Column="1" Spacing="4">
-            <TextBlock Text="{x:Bind Data.Title, Mode=OneWay}"
-                       Style="{StaticResource BodyStrongTextBlockStyle}"
-                       TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
-                       ToolTipService.ToolTip="{x:Bind Data.Title, Mode=OneWay}" />
-            <TextBlock Text="{x:Bind Data.Repository, Mode=OneWay}"
-                       Visibility="{x:Bind local:PullRequestCard.Visible(ShowRepository), Mode=OneWay}"
-                       Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       ToolTipService.ToolTip="{x:Bind Data.Repository, Mode=OneWay}" />
-            <TextBlock Text="{x:Bind Data.Metadata, Mode=OneWay}"
-                       Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       ToolTipService.ToolTip="{x:Bind Data.MetadataToolTip, Mode=OneWay}" />
-            <TextBlock Text="{x:Bind Data.ActivitySummary, Mode=OneWay}"
-                       Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasActivity), Mode=OneWay}"
-                       Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
-                       MaxLines="2" TextTrimming="CharacterEllipsis"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       ToolTipService.ToolTip="{x:Bind Data.ActivityToolTip, Mode=OneWay}" />
-            <TextBlock Text="{x:Bind Data.Branches, Mode=OneWay}"
-                       FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       ToolTipService.ToolTip="{x:Bind Data.Branches, Mode=OneWay}" />
-                <Border Padding="6,2" CornerRadius="{ThemeResource ControlCornerRadius}" HorizontalAlignment="Left"
-                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                        Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasReviewDecision), Mode=OneWay}"
-                        ToolTipService.ToolTip="{x:Bind Data.ReviewDecisionText, Mode=OneWay}">
-                    <Grid ColumnSpacing="4">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <FontIcon Glyph="{x:Bind Data.ReviewDecisionGlyph, Mode=OneWay}" FontSize="12"
+                <!-- Title keeps the width; the state badge sits beside it instead of below. -->
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{x:Bind Data.Title, Mode=OneWay}"
+                               Style="{StaticResource BodyStrongTextBlockStyle}"
+                               TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
+                               ToolTipService.ToolTip="{x:Bind Data.Title, Mode=OneWay}" />
+                    <Border x:Name="StatePill" Grid.Column="1" Padding="7,2" CornerRadius="10"
+                            VerticalAlignment="Top"
+                            Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                            ToolTipService.ToolTip="{x:Bind Data.StateDescription, Mode=OneWay}">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <FontIcon x:Name="StateIcon" Glyph="{x:Bind Data.StateGlyph, Mode=OneWay}" FontSize="11"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      AutomationProperties.AccessibilityView="Raw" />
+                            <TextBlock x:Name="StateText" Text="{x:Bind Data.StateLabel, Mode=OneWay}"
+                                       Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+                <TextBlock Text="{x:Bind Data.Repository, Mode=OneWay}"
+                           Visibility="{x:Bind local:PullRequestCard.Visible(ShowRepository), Mode=OneWay}"
+                           Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           ToolTipService.ToolTip="{x:Bind Data.Repository, Mode=OneWay}" />
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{x:Bind Data.Metadata, Mode=OneWay}"
+                               Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               ToolTipService.ToolTip="{x:Bind Data.MetadataToolTip, Mode=OneWay}" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasComments), Mode=OneWay}"
+                                AutomationProperties.Name="{x:Bind Data.CommentSummary, Mode=OneWay}"
+                                ToolTipService.ToolTip="{x:Bind Data.CommentSummary, Mode=OneWay}">
+                        <FontIcon Glyph="&#xE8BD;" FontSize="11"
+                                  Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                   AutomationProperties.AccessibilityView="Raw" />
-                        <TextBlock Grid.Column="1" Text="{x:Bind Data.ReviewDecisionText, Mode=OneWay}"
-                                   Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis" />
-                    </Grid>
-                </Border>
-            <Grid ColumnSpacing="4"
-                  Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasLabels), Mode=OneWay}"
-                  ToolTipService.ToolTip="{x:Bind Data.LabelsToolTip, Mode=OneWay}">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <ItemsControl ItemsSource="{x:Bind Data.Labels, Mode=OneWay}" IsTabStop="False">
+                        <TextBlock Text="{x:Bind Data.CommentCountText, Mode=OneWay}"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+                <TextBlock Text="{x:Bind Data.ActivitySummary, Mode=OneWay}"
+                           Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasActivity), Mode=OneWay}"
+                           Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                           MaxLines="2" TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           ToolTipService.ToolTip="{x:Bind Data.ActivityToolTip, Mode=OneWay}" />
+                <TextBlock Text="{x:Bind Data.Branches, Mode=OneWay}"
+                           FontFamily="Consolas" FontSize="12" TextTrimming="CharacterEllipsis"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           ToolTipService.ToolTip="{x:Bind Data.Branches, Mode=OneWay}" />
+                <!-- Chips wrap, so labels stay readable instead of being squeezed into one row. -->
+                <ItemsControl ItemsSource="{x:Bind Data.LabelChips, Mode=OneWay}" IsTabStop="False"
+                              Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasLabels), Mode=OneWay}"
+                              ToolTipService.ToolTip="{x:Bind Data.LabelsToolTip, Mode=OneWay}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <StackPanel Orientation="Horizontal" />
+                            <local:FlowPanel ItemSpacing="4" LineSpacing="4" />
                         </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="core:PullRequestLabel">
-                            <Border Padding="6,2" Margin="0,0,4,0" MaxWidth="76"
-                                    CornerRadius="{ThemeResource ControlCornerRadius}"
-                                    Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                                    ToolTipService.ToolTip="{x:Bind Name, Mode=OneTime}">
-                                <Grid ColumnSpacing="4">
+                        <DataTemplate x:DataType="vm:PullRequestLabelChip">
+                            <Border Padding="6,1" MaxWidth="188" BorderThickness="1" CornerRadius="6"
+                                    Background="{x:Bind local:PullRequestCard.LabelFillBrush(Color), Mode=OneTime}"
+                                    BorderBrush="{x:Bind local:PullRequestCard.LabelStrokeBrush(Color), Mode=OneTime}"
+                                    ToolTipService.ToolTip="{x:Bind ToolTip, Mode=OneTime}">
+                                <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <!-- Color is decorative only. Names always use platform text brushes. -->
-                                    <Ellipse Width="6" Height="6" VerticalAlignment="Center"
+                                    <Ellipse Width="6" Height="6" Margin="0,0,5,0" VerticalAlignment="Center"
+                                             Visibility="{x:Bind local:PullRequestCard.Visible(HasColor), Mode=OneTime}"
                                              Fill="{x:Bind local:PullRequestCard.LabelDotBrush(Color), Mode=OneTime}"
                                              AutomationProperties.AccessibilityView="Raw" />
-                                    <TextBlock Grid.Column="1" Text="{x:Bind Name, Mode=OneTime}"
-                                               Style="{StaticResource CaptionTextBlockStyle}"
+                                    <TextBlock Grid.Column="1" Text="{x:Bind Text, Mode=OneTime}"
+                                               Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold"
                                                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                                TextTrimming="CharacterEllipsis" />
                                 </Grid>
@@ -146,129 +251,131 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-                <Border Grid.Column="1" Padding="6,2" MaxWidth="64"
-                        CornerRadius="{ThemeResource ControlCornerRadius}"
-                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                        Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasAdditionalLabels), Mode=OneWay}">
-                    <TextBlock Text="{x:Bind Data.AdditionalLabelsText, Mode=OneWay}"
-                               TextTrimming="CharacterEllipsis" Style="{StaticResource CaptionTextBlockStyle}" />
-                </Border>
-            </Grid>
-            <Grid ColumnSpacing="6" Margin="0,2,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Border Padding="6,3" CornerRadius="{ThemeResource ControlCornerRadius}" VerticalAlignment="Center"
-                        Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
-                        ToolTipService.ToolTip="{x:Bind Data.StateDescription, Mode=OneWay}">
-                    <StackPanel Orientation="Horizontal" Spacing="4">
-                        <FontIcon x:Name="StateIcon" Glyph="{x:Bind Data.StateGlyph, Mode=OneWay}" FontSize="12"
-                                  Foreground="{ThemeResource PullRequestDraftForegroundBrush}"
-                                  AutomationProperties.AccessibilityView="Raw" />
-                        <TextBlock x:Name="StateText" Text="{x:Bind Data.StateLabel, Mode=OneWay}"
-                                   Foreground="{ThemeResource PullRequestDraftForegroundBrush}"
-                                   Style="{StaticResource CaptionTextBlockStyle}" />
-                    </StackPanel>
-                </Border>
-            <Button x:Name="ChecksButton" Grid.Column="1"
-                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" MinHeight="32"
-                    Tapped="ChecksButton_Tapped" KeyDown="ChecksButton_KeyDown"
-                    AutomationProperties.AutomationId="{x:Bind Data.ChecksButtonAutomationId, Mode=OneWay}"
-                    AutomationProperties.Name="{x:Bind Data.ChecksAccessibleName, Mode=OneWay}"
-                    ToolTipService.ToolTip="{x:Bind Data.FreshnessDescription, Mode=OneWay}">
-                <Grid ColumnSpacing="8">
+                <Grid ColumnSpacing="6" Margin="0,2,0,0">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="16" />
                         <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <FontIcon Glyph="{x:Bind Data.ChecksGlyph, Mode=OneWay}" FontSize="14"
-                              AutomationProperties.AccessibilityView="Raw" />
-                    <TextBlock Grid.Column="1" Text="{x:Bind Data.ChecksSummary, Mode=OneWay}"
-                               Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
-                    <FontIcon Grid.Column="2" Glyph="&#xE70D;" FontSize="10"
-                              AutomationProperties.AccessibilityView="Raw" />
+                    <Button x:Name="ChecksButton" Style="{StaticResource ChipButtonStyle}"
+                            Tapped="ChecksButton_Tapped" KeyDown="ChecksButton_KeyDown"
+                            AutomationProperties.AutomationId="{x:Bind Data.ChecksButtonAutomationId, Mode=OneWay}"
+                            AutomationProperties.Name="{x:Bind Data.ChecksAccessibleName, Mode=OneWay}"
+                            ToolTipService.ToolTip="{x:Bind Data.FreshnessDescription, Mode=OneWay}">
+                        <Border x:Name="ChecksChip" Padding="7,3" CornerRadius="10"
+                                Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+                            <Grid ColumnSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon x:Name="ChecksIcon" Glyph="{x:Bind Data.ChecksGlyph, Mode=OneWay}" FontSize="12"
+                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                          AutomationProperties.AccessibilityView="Raw" />
+                                <TextBlock x:Name="ChecksText" Grid.Column="1" Text="{x:Bind Data.ChecksSummary, Mode=OneWay}"
+                                           Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <FontIcon Grid.Column="2" Glyph="&#xE70D;" FontSize="9"
+                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                          AutomationProperties.AccessibilityView="Raw" />
+                            </Grid>
+                        </Border>
+                        <Button.Flyout>
+                            <Flyout x:Name="ChecksFlyout" Placement="Bottom" Opening="ChecksFlyout_Opening" Closed="ChecksFlyout_Closed">
+                                <Flyout.FlyoutPresenterStyle>
+                                    <Style TargetType="FlyoutPresenter">
+                                        <Setter Property="MaxWidth" Value="372" />
+                                        <Setter Property="MaxHeight" Value="480" />
+                                        <Setter Property="Padding" Value="12" />
+                                    </Style>
+                                </Flyout.FlyoutPresenterStyle>
+                                <Grid Width="312" MaxHeight="440" RowSpacing="8">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="{x:Bind Data.ChecksSummary, Mode=OneWay}" TextWrapping="Wrap"
+                                                   Style="{StaticResource BodyStrongTextBlockStyle}"
+                                                   AutomationProperties.HeadingLevel="Level3" />
+                                        <TextBlock Text="{x:Bind Data.HeadCommitLabel, Mode=OneWay}"
+                                                   FontFamily="Consolas" FontSize="12"
+                                                   ToolTipService.ToolTip="{x:Bind Data.HeadCommitToolTip, Mode=OneWay}" />
+                                    </StackPanel>
+                                    <ScrollViewer Grid.Row="1" MaxHeight="220" VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  AutomationProperties.Name="Individual pull request checks">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="{x:Bind Data.FreshnessDescription, Mode=OneWay}" TextWrapping="Wrap"
+                                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind Data.CheckCountLabel, Mode=OneWay}"
+                                                       Style="{StaticResource CaptionTextBlockStyle}" />
+                                            <TextBlock Text="{x:Bind Data.ChecksExplanation, Mode=OneWay}" TextWrapping="Wrap"
+                                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind Data.EmptyChecksMessage, Mode=OneWay}" TextWrapping="Wrap"
+                                                       Visibility="{x:Bind local:PullRequestCard.Hidden(Data.HasChecks), Mode=OneWay}" />
+                                            <ItemsControl ItemsSource="{x:Bind Data.Checks, Mode=OneWay}" IsTabStop="False">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="vm:PullRequestCheckViewModel">
+                                                        <Border Padding="0,8" BorderThickness="0,1,0,0"
+                                                                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+                                                            <Grid ColumnSpacing="8" RowSpacing="2"
+                                                                  AutomationProperties.Name="{x:Bind AccessibleName, Mode=OneTime}">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="16" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <Grid.RowDefinitions>
+                                                                    <RowDefinition Height="Auto" />
+                                                                    <RowDefinition Height="Auto" />
+                                                                </Grid.RowDefinitions>
+                                                                <FontIcon Glyph="{x:Bind Glyph, Mode=OneTime}" FontSize="14"
+                                                                          VerticalAlignment="Top" Margin="0,3,0,0"
+                                                                          Foreground="{x:Bind local:PullRequestCard.ToneBrush(Tone), Mode=OneTime}"
+                                                                          AutomationProperties.AccessibilityView="Raw" />
+                                                                <TextBlock Grid.Column="1" Text="{x:Bind Name, Mode=OneTime}"
+                                                                           TextWrapping="Wrap" />
+                                                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind State, Mode=OneTime}"
+                                                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Button Grid.Row="2" Click="OpenChecks_Click"
+                                            HorizontalAlignment="Stretch" MinHeight="32"
+                                            IsEnabled="{x:Bind Data.CanOpenChecks, Mode=OneWay}"
+                                            AutomationProperties.AutomationId="{x:Bind Data.OpenChecksAutomationId, Mode=OneWay}"
+                                            AutomationProperties.Name="{x:Bind Data.OpenChecksAccessibleName, Mode=OneWay}">
+                                        <TextBlock Text="Open checks on GitHub" TextWrapping="Wrap" />
+                                    </Button>
+                                </Grid>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+                    <Border x:Name="ReviewChip" Grid.Column="1" Padding="7,3" CornerRadius="10"
+                            VerticalAlignment="Center"
+                            Background="{ThemeResource ControlAltFillColorSecondaryBrush}"
+                            Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasReviewDecision), Mode=OneWay}"
+                            ToolTipService.ToolTip="{x:Bind Data.ReviewDecisionText, Mode=OneWay}">
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <FontIcon x:Name="ReviewIcon" Glyph="{x:Bind Data.ReviewDecisionGlyph, Mode=OneWay}" FontSize="12"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      AutomationProperties.AccessibilityView="Raw" />
+                            <TextBlock x:Name="ReviewText" Text="{x:Bind Data.ReviewDecisionText, Mode=OneWay}"
+                                       Style="{StaticResource CaptionTextBlockStyle}" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Border>
                 </Grid>
-                <Button.Flyout>
-                    <Flyout x:Name="ChecksFlyout" Placement="Bottom" Opening="ChecksFlyout_Opening" Closed="ChecksFlyout_Closed">
-                        <Flyout.FlyoutPresenterStyle>
-                            <Style TargetType="FlyoutPresenter">
-                                <Setter Property="MaxWidth" Value="372" />
-                                <Setter Property="MaxHeight" Value="480" />
-                                <Setter Property="Padding" Value="12" />
-                            </Style>
-                        </Flyout.FlyoutPresenterStyle>
-                        <Grid Width="312" MaxHeight="440" RowSpacing="8">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <StackPanel Spacing="8">
-                                <TextBlock Text="{x:Bind Data.ChecksSummary, Mode=OneWay}" TextWrapping="Wrap"
-                                           Style="{StaticResource BodyStrongTextBlockStyle}"
-                                           AutomationProperties.HeadingLevel="Level3" />
-                                <TextBlock Text="{x:Bind Data.HeadCommitLabel, Mode=OneWay}"
-                                           FontFamily="Consolas" FontSize="12"
-                                           ToolTipService.ToolTip="{x:Bind Data.HeadCommitToolTip, Mode=OneWay}" />
-                            </StackPanel>
-                            <ScrollViewer Grid.Row="1" MaxHeight="220" VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled"
-                                          AutomationProperties.Name="Individual pull request checks">
-                              <StackPanel Spacing="8">
-                                <TextBlock Text="{x:Bind Data.FreshnessDescription, Mode=OneWay}" TextWrapping="Wrap"
-                                           Style="{StaticResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{x:Bind Data.CheckCountLabel, Mode=OneWay}"
-                                           Style="{StaticResource CaptionTextBlockStyle}" />
-                                <TextBlock Text="{x:Bind Data.ChecksExplanation, Mode=OneWay}" TextWrapping="Wrap"
-                                           Style="{StaticResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                <TextBlock Text="{x:Bind Data.EmptyChecksMessage, Mode=OneWay}" TextWrapping="Wrap"
-                                           Visibility="{x:Bind local:PullRequestCard.Hidden(Data.HasChecks), Mode=OneWay}" />
-                                <ItemsControl ItemsSource="{x:Bind Data.Checks, Mode=OneWay}" IsTabStop="False">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:PullRequestCheckViewModel">
-                                            <Border Padding="0,8" BorderThickness="0,1,0,0"
-                                                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
-                                                <Grid ColumnSpacing="8" RowSpacing="2"
-                                                      AutomationProperties.Name="{x:Bind AccessibleName, Mode=OneTime}">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="16" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <Grid.RowDefinitions>
-                                                        <RowDefinition Height="Auto" />
-                                                        <RowDefinition Height="Auto" />
-                                                    </Grid.RowDefinitions>
-                                                    <FontIcon Glyph="{x:Bind Glyph, Mode=OneTime}" FontSize="14"
-                                                              VerticalAlignment="Top" Margin="0,3,0,0"
-                                                              AutomationProperties.AccessibilityView="Raw" />
-                                                    <TextBlock Grid.Column="1" Text="{x:Bind Name, Mode=OneTime}"
-                                                               TextWrapping="Wrap" />
-                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind State, Mode=OneTime}"
-                                                               Style="{StaticResource CaptionTextBlockStyle}"
-                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                              </StackPanel>
-                            </ScrollViewer>
-                            <Button Grid.Row="2" Click="OpenChecks_Click"
-                                    HorizontalAlignment="Stretch" MinHeight="32"
-                                    IsEnabled="{x:Bind Data.CanOpenChecks, Mode=OneWay}"
-                                    AutomationProperties.AutomationId="{x:Bind Data.OpenChecksAutomationId, Mode=OneWay}"
-                                    AutomationProperties.Name="{x:Bind Data.OpenChecksAccessibleName, Mode=OneWay}">
-                                <TextBlock Text="Open checks on GitHub" TextWrapping="Wrap" />
-                            </Button>
-                        </Grid>
-                    </Flyout>
-                </Button.Flyout>
-            </Button>
-            </Grid>
             </StackPanel>
         </Grid>
     </Border>
