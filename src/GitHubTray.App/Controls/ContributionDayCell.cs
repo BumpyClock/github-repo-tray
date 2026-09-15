@@ -6,7 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 namespace GitHubTray_App.Controls;
 
 /// <summary>A noninteractive data point: accessible as text, never a button or tab stop.</summary>
-public sealed class ContributionDayCell : Control
+public sealed partial class ContributionDayCell : Control
 {
     public ContributionDayCell(ContributionPlotDay day)
     {
@@ -21,7 +21,7 @@ public sealed class ContributionDayCell : Control
 
     protected override AutomationPeer OnCreateAutomationPeer() => new DayCellAutomationPeer(this);
 
-    private sealed class DayCellAutomationPeer(ContributionDayCell owner) : FrameworkElementAutomationPeer(owner)
+    private sealed partial class DayCellAutomationPeer(ContributionDayCell owner) : FrameworkElementAutomationPeer(owner)
     {
         protected override string GetClassNameCore() => nameof(ContributionDayCell);
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Text;

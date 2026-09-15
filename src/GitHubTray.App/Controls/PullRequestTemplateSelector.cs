@@ -4,7 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace GitHubTray_App.Controls;
 
-public sealed class PullRequestTemplateSelector : DataTemplateSelector
+public sealed partial class PullRequestTemplateSelector : DataTemplateSelector
 {
     public DataTemplate RowTemplate { get; set; } = null!;
     public DataTemplate PullRequestTemplate { get; set; } = null!;

@@ -25,7 +25,7 @@ public sealed class SettingsStore(string filePath)
 
         await using (stream)
         {
-            var settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, cancellationToken: cancellationToken)
+            var settings = await JsonSerializer.DeserializeAsync(stream, SettingsJsonContext.Default.AppSettings, cancellationToken)
                 .ConfigureAwait(false) ?? throw new JsonException("Settings must contain an object.");
             settings.Validate();
             return settings;
@@ -42,7 +42,7 @@ public sealed class SettingsStore(string filePath)
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
             await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                await JsonSerializer.SerializeAsync(stream, settings, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await JsonSerializer.SerializeAsync(stream, settings, SettingsJsonContext.Default.AppSettings, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();

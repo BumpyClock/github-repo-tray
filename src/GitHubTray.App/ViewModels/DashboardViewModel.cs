@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace GitHubTray_App.ViewModels;
 
+[WinRT.GeneratedBindableCustomProperty]
 public sealed partial class DashboardRow : ObservableObject
 {
     private readonly bool _isRepositoryFirst;

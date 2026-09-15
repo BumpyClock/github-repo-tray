@@ -167,7 +167,7 @@ public sealed partial class ContributionHeatmap : UserControl
 
     protected override AutomationPeer OnCreateAutomationPeer() => new HeatmapAutomationPeer(this);
 
-    private sealed class HeatmapAutomationPeer(ContributionHeatmap owner) : FrameworkElementAutomationPeer(owner), IValueProvider
+    private sealed partial class HeatmapAutomationPeer(ContributionHeatmap owner) : FrameworkElementAutomationPeer(owner), IValueProvider
     {
         public bool IsReadOnly => true;
         public string Value => owner.ViewModel.SelectedDayDescription;

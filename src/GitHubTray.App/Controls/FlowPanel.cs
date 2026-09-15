@@ -9,7 +9,7 @@ namespace GitHubTray_App.Controls;
 /// Label chips need this so a PR keeps showing its labels instead of clipping them
 /// to a single row; WinUI has no built-in wrapping panel for a plain ItemsControl.
 /// </summary>
-public sealed class FlowPanel : Panel
+public sealed partial class FlowPanel : Panel
 {
     public static readonly DependencyProperty ItemSpacingProperty = DependencyProperty.Register(
         nameof(ItemSpacing), typeof(double), typeof(FlowPanel), new PropertyMetadata(6d, OnSpacingChanged));

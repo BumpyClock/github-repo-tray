@@ -13,7 +13,7 @@ $cases = @(
 )
 
 foreach ($case in $cases) {
-    # Ignored local publish profiles must not mask the behavior of a clean checkout.
+    # Check the project's RID defaults independently of publish profiles.
     $arguments = @(
         'msbuild', $Project, '-nologo', '-p:PublishProfile=',
         "-p:Platform=$($case.Platform)", '-getProperty:RuntimeIdentifier'
@@ -30,3 +30,31 @@ foreach ($case in $cases) {
     }
     Write-Output "PASS: Platform=$($case.Platform), explicit RID=$($case.Runtime), resolved RID=$actual"
 }
+
+foreach ($architecture in @('x64', 'x86', 'arm64')) {
+    $json = & dotnet msbuild $Project -nologo "-p:PublishProfile=win-$architecture" `
+        -getProperty:RuntimeIdentifier,Platform,Configuration,PublishAot,SelfContained,PublishDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "Publish profile evaluation failed for win-$architecture."
+    }
+    $properties = ($json | Out-String | ConvertFrom-Json).Properties
+    if ($properties.RuntimeIdentifier -cne "win-$architecture" -or
+        $properties.Platform -ine $architecture -or
+        $properties.Configuration -ne 'Release' -or
+        $properties.PublishAot -ne 'true' -or
+        $properties.SelfContained -ne 'true' -or
+        -not $properties.PublishDir.EndsWith("\win-$architecture\")) {
+        throw "Incorrect NativeAOT publish profile settings: $($properties | ConvertTo-Json -Compress)"
+    }
+    Write-Output "PASS: win-$architecture profile selects Release NativeAOT and its own output directory."
+}
+
+$debug = & dotnet msbuild $Project -nologo -p:Configuration=Debug -p:Platform=x64 -getProperty:PublishProfile,PublishAot
+if ($LASTEXITCODE -ne 0) {
+    throw 'Debug configuration evaluation failed.'
+}
+$properties = ($debug | Out-String | ConvertFrom-Json).Properties
+if ($properties.PublishProfile -or $properties.PublishAot -eq 'true') {
+    throw 'A release publish profile unexpectedly changed the Debug workflow.'
+}
+Write-Output 'PASS: Debug does not automatically load a release publish profile or enable NativeAOT.'

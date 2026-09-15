@@ -123,6 +123,8 @@ an elapsed reset shows **Reset pending** until new quota data arrives.
 
 - Windows 10 version 1809 or later; Windows 11 recommended.
 - .NET 10 SDK and WinApp CLI 0.6.1 or later for development.
+- Visual Studio 2022 or later (or Build Tools) with **Desktop development with
+  C++** for NativeAOT publishing. ARM64 publishing also needs the ARM64 C++ tools.
 - Windows Developer Mode for local development-package registration.
 - [GitHub CLI](https://cli.github.com/) available as `gh` on your PATH.
 
@@ -174,6 +176,56 @@ multiple terminals or agent sessions. The `Platform=x64` property above keeps
 build and launch pointed at the same output directory; it is also needed when
 adding `--no-build` to reuse that build.
 
+### NativeAOT publishing
+
+Release publishing compiles the app and its managed dependencies to native code
+with NativeAOT, rather than ReadyToRun. Debug builds retain the normal managed
+debugger workflow. Use **publish**, not just `dotnet build -c Release`, to produce
+the native executable. Checked-in profiles select the architecture and put each
+publish layout under `artifacts\nativeaot`:
+
+```powershell
+dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj -c Release -p:PublishProfile=win-x64 -warnaserror
+.\scripts\Test-NativeAot.ps1 -PublishDirectory .\artifacts\nativeaot\win-x64
+```
+
+Use `PublishProfile=win-x86` or `PublishProfile=win-arm64` for the other architectures.
+The three profiles live in `src\GitHubTray.App\Properties\PublishProfiles`.
+Use a clean output directory when switching deployment modes.
+The verification script checks the NativeAOT runtime export, not merely the
+presence of an `.exe`, and rejects managed app/JIT payloads.
+
+The native app does not require an installed .NET runtime. It still uses the
+Windows App Runtime and retains its full-trust MSIX package identity; NativeAOT
+does not turn it into an unpackaged or single-file portable app. Package the
+**publish output**, not the managed build output. Keep the generated `.pdb` for
+native crash diagnosis.
+
+Settings use source-generated JSON metadata without changing the on-disk format.
+WinRT controls and automation peers support generated interop, and the dynamic
+accessibility-name binding uses generated property metadata. AOT/trim diagnostics
+remain enabled; CI publishes x64 with warnings treated as errors.
+
+### MSIX bundle
+
+Build one unsigned bundle containing x64, x86, and ARM64 NativeAOT packages:
+
+```powershell
+.\scripts\Build-MsixBundle.ps1
+```
+
+The script uses all three publish profiles and writes
+`GitHubTray_1.0.0.0_x64_x86_arm64.msixbundle` under a new timestamped directory in
+`artifacts\packages`. The version comes from `Package.appxmanifest`. Use
+`-OutputDirectory <new-directory>` to choose the destination; an existing directory
+is rejected to prevent stale files from entering the bundle.
+
+The bundle retains the Windows App Runtime dependency. It is **unsigned**, so it
+must be signed with a certificate matching the manifest publisher before
+sideloading. The script does not create or trust certificates, install the app,
+or replace a running development package. See [docs/RELEASING.md](docs/RELEASING.md)
+for the build and signing checklist.
+
 ## Tests
 
 ```powershell
@@ -194,8 +246,10 @@ notifications, pixel-aligned preset sizes, and right-edge anchoring.
 They also cover startup fetch/setup overlap, single-flight handoff and shutdown,
 deferred check-detail creation and recycling, and hidden-panel presentation-clock
 behavior. These lifecycle tests use fixture data rather than live GitHub requests.
-The runtime checks verify x86/x64/ARM64 selection without machine-local publish
-profiles, including preservation of an explicitly supplied runtime identifier.
+The runtime checks verify x86/x64/ARM64 selection, preservation of an explicitly
+supplied runtime identifier, all three publish profiles, and Debug isolation.
+CI also checks the native published executable and reruns the settings tests with
+`-p:JsonSerializerIsReflectionEnabledByDefault=false` to catch reflection regressions.
 
 For native selection checks, open the running tray panel with a loaded calendar:
 
