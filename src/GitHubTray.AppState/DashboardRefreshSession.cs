@@ -331,7 +331,8 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                         reason is not DashboardRefreshReason.Manual &&
                         _manualFollowUpRequested &&
                         unexpectedFault is null &&
-                        (snapshot is null || result!.ReusedAnySection);
+                        (snapshot is null || result!.ReusedAnySection ||
+                         HasSectionFailures(snapshot));
 
                     if (runManualFollowUp)
                     {
@@ -531,6 +532,14 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
 
     private static DashboardSection FreezeSection(DashboardSection section) =>
         section with { Items = section.Items.ToImmutableArray() };
+
+    private static bool HasSectionFailures(DashboardSnapshot snapshot) =>
+        snapshot.Activity.Error is not null ||
+        snapshot.PullRequests.Error is not null ||
+        snapshot.ReviewRequests.Error is not null ||
+        snapshot.Repositories.Error is not null ||
+        snapshot.Contributions.Error is not null ||
+        snapshot.Copilot.Error is not null;
 
     private static void ValidateRefreshInterval(TimeSpan refreshInterval)
     {

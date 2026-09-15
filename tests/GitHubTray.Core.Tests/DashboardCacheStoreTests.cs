@@ -98,6 +98,55 @@ public sealed class DashboardCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadingActiveAccountDeletesFullyExpiredInactiveAccountRecord()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(activity: ListSection("active")));
+        await store.WriteAsync(Record(
+            other,
+            activity: ListSection("expired") with
+            {
+                SucceededAt = Now - JsonDashboardCacheStore.Retention
+            }));
+        var otherPath = store.GetFilePath(other);
+
+        var active = await store.ReadAsync(Octocat, Now);
+
+        Assert.Equal(DashboardCacheDiagnosticKind.Loaded, active.Diagnostic.Kind);
+        Assert.False(File.Exists(otherPath));
+    }
+
+    [Fact]
+    public async Task ReadingActiveAccountPrunesExpiredSectionsFromInactiveAccountRecord()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(activity: ListSection("active")));
+        await store.WriteAsync(Record(
+            other,
+            activity: ListSection("expired") with
+            {
+                SucceededAt = Now - JsonDashboardCacheStore.Retention
+            },
+            pullRequests: ListSection(
+                "eligible", DashboardCacheVersions.PullRequests) with
+            {
+                SucceededAt = Now - JsonDashboardCacheStore.Retention + TimeSpan.FromTicks(1)
+            }));
+        var otherPath = store.GetFilePath(other);
+
+        _ = await store.ReadAsync(Octocat, Now);
+
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(otherPath));
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("activity").ValueKind);
+        Assert.Equal(
+            "eligible",
+            document.RootElement.GetProperty("pullRequests").GetProperty("items")[0]
+                .GetProperty("id").GetString());
+    }
+
+    [Fact]
     public async Task MalformedIncompatibleAndInterruptedFilesAreExplicitMisses()
     {
         var store = new JsonDashboardCacheStore(_directory);

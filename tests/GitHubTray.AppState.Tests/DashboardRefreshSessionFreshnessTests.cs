@@ -134,6 +134,43 @@ public sealed class DashboardRefreshSessionFreshnessTests
     }
 
     [Fact]
+    public async Task ManualDuringPartialAutomaticFailureRunsOneForcedFullFollowUp()
+    {
+        await using var fixture = new RefreshSessionFixture();
+        await fixture.RefreshAsync();
+        fixture.Clock.Advance(TimeSpan.FromMinutes(15));
+        var automatic = RefreshResponses.Success(revision: "automatic");
+        automatic.Repositories = automatic.Repositories with
+        {
+            Failure = new GitHubException("Repositories unavailable")
+        };
+        var automaticFinal = fixture.Gate();
+        automatic.FinalUser = automatic.FinalUser with { Gate = automaticFinal };
+        var forced = RefreshResponses.Success(revision: "forced");
+        var forcedInitial = fixture.Gate();
+        forced.InitialUser = forced.InitialUser with { Gate = forcedInitial };
+        fixture.Api.Use(automatic, forced);
+        var before = fixture.Api.Requests.Length;
+
+        var refresh = fixture.Session.RefreshAsync(DashboardRefreshReason.Periodic);
+        await automaticFinal.EnteredAsync();
+        Assert.Equal(8, fixture.Api.Requests.Length - before);
+        Assert.Same(refresh, fixture.Session.RefreshAsync(DashboardRefreshReason.Manual));
+        Assert.Same(refresh, fixture.Session.RefreshAsync(DashboardRefreshReason.Manual));
+
+        automaticFinal.Release();
+        await forcedInitial.EnteredAsync();
+        Assert.Equal(9, fixture.Api.Requests.Length - before);
+        forcedInitial.Release();
+        await refresh.WaitAsync(RefreshSessionFixture.Timeout);
+
+        SessionAssertions.Success(fixture.Session.State, revision: "forced");
+        Assert.Equal(16, fixture.Api.Requests.Length - before);
+        Assert.Equal(2, fixture.Api.Requests.Skip(before).Count(
+            request => request.Route == ApiRoute.Repositories));
+    }
+
+    [Fact]
     public async Task ManualDuringAutomaticFinalIdentityFailureRunsOneForcedFullFollowUp()
     {
         await using var fixture = new RefreshSessionFixture();

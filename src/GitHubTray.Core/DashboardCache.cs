@@ -141,6 +141,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             }
 
             var filePath = GetFilePath(account);
+            await PruneInactiveRecordsAsync(filePath, now, cancellationToken).ConfigureAwait(false);
             await DeleteInterruptedWritesAsync(filePath).ConfigureAwait(false);
             FileStream stream;
             try
@@ -423,6 +424,141 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private async Task PruneInactiveRecordsAsync(
+        string activeFilePath,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var accountDirectory = Path.GetDirectoryName(activeFilePath)!;
+        if (!Directory.Exists(accountDirectory))
+        {
+            return;
+        }
+
+        string[] ownedFiles;
+        try
+        {
+            ownedFiles = Directory.EnumerateFiles(
+                    accountDirectory, "*", SearchOption.TopDirectoryOnly)
+                .Where(IsOwnedCacheFile)
+                .ToArray();
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            return;
+        }
+
+        foreach (var filePath in ownedFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!filePath.EndsWith(".json", StringComparison.Ordinal))
+            {
+                try
+                {
+                    File.Delete(filePath);
+                }
+                catch (Exception exception) when (IsIoFailure(exception))
+                {
+                    // Another process may hold an interrupted write; retry on a future read.
+                }
+                continue;
+            }
+            if (string.Equals(filePath, activeFilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            await PruneInactiveRecordAsync(filePath, now, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PruneInactiveRecordAsync(
+        string filePath,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        DashboardCacheRecord record;
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (Exception exception) when (
+            exception is FileNotFoundException or DirectoryNotFoundException ||
+            IsIoFailure(exception))
+        {
+            return;
+        }
+
+        try
+        {
+            if (stream.Length > MaximumFileSize)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return;
+            }
+
+            await using (stream)
+            {
+                record = await JsonSerializer.DeserializeAsync(
+                    stream, DashboardCacheJsonContext.Default.DashboardCacheRecord, cancellationToken)
+                    .ConfigureAwait(false) ?? throw new JsonException("Cache must contain an object.");
+            }
+
+            if (record.SchemaVersion != DashboardCacheVersions.Schema)
+            {
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return;
+            }
+            ValidateAccount(record.Account);
+            if (!string.Equals(GetFilePath(record.Account), filePath, StringComparison.OrdinalIgnoreCase))
+            {
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                return;
+            }
+
+            var pruned = false;
+            var retained = record with
+            {
+                Activity = Retain(record.Activity, DashboardCacheVersions.Activity, now, ref pruned),
+                PullRequests = Retain(
+                    record.PullRequests, DashboardCacheVersions.PullRequests, now, ref pruned),
+                ReviewRequests = Retain(
+                    record.ReviewRequests, DashboardCacheVersions.ReviewRequests, now, ref pruned),
+                Repositories = Retain(
+                    record.Repositories, DashboardCacheVersions.Repositories, now, ref pruned),
+                Contributions = Retain(
+                    record.Contributions, DashboardCacheVersions.Contributions, now, ref pruned),
+                Copilot = Retain(record.Copilot, DashboardCacheVersions.Copilot, now, ref pruned)
+            };
+            ValidateRecord(retained);
+
+            if (!HasAnySection(retained))
+            {
+                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            }
+            else if (pruned)
+            {
+                _ = await ReplaceAsync(filePath, retained, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or InvalidOperationException)
+        {
+            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsIoFailure(exception))
+        {
+            // A locked inactive record is retried during a future cache read.
         }
     }
 
