@@ -77,7 +77,18 @@ public sealed partial class MainPage : Page
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close
         };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        ContentDialogResult result;
+        try
+        {
+            result = await dialog.ShowAsync();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or COMException)
+        {
+            ViewModel.ActionError =
+                "The confirmation dialog could not be shown. Close any open dialog and try again.";
+            return;
+        }
+        if (result == ContentDialogResult.Primary)
         {
             await ViewModel.ClearCachedDataAsync();
         }

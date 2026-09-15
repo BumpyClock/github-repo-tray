@@ -30,7 +30,9 @@ public sealed class DashboardStartupTests
         await using var startup = Start(api);
         Assert.True(api.InitialUserEntered.Task.IsCompleted);
         Assert.Equal(1, api.RequestCount);
-        Assert.Same(startup.RefreshTask, startup.Session.RefreshAsync());
+        Assert.Same(
+            startup.RefreshTask,
+            startup.Session.RefreshAsync(DashboardRefreshReason.Startup));
 
         var setupEntered = Signal();
         using var releaseSetup = new ManualResetEventSlim();

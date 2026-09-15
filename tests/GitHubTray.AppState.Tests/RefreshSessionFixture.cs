@@ -124,10 +124,12 @@ internal sealed record ApiReply(string Body)
     internal RequestGate? Gate { get; init; }
     internal bool FaultAsTask { get; init; }
     internal Action? BeforeSend { get; init; }
+    internal Action<CancellationToken>? ObserveCancellation { get; init; }
 
     internal Task<string> SendAsync(CancellationToken cancellationToken)
     {
         BeforeSend?.Invoke();
+        ObserveCancellation?.Invoke(cancellationToken);
         if (Gate is not null)
         {
             return SendGatedAsync(cancellationToken);

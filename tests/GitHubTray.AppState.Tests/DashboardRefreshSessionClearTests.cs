@@ -62,6 +62,37 @@ public sealed class DashboardRefreshSessionClearTests
     }
 
     [Fact]
+    public async Task ClearDrainsRefreshBeforeDisposingCancellationWhenCancellationCallbackFaults()
+    {
+        var cache = new MemoryDashboardCacheStore();
+        await using var fixture = new RefreshSessionFixture(cache);
+        await fixture.RefreshAsync();
+        var finalGate = fixture.Gate(ignoreCancellation: true);
+        var responses = RefreshResponses.Success(revision: "obsolete");
+        responses.FinalUser = responses.FinalUser with
+        {
+            Gate = finalGate,
+            ObserveCancellation = token =>
+                token.Register(() => throw new InvalidOperationException("Injected callback failure"))
+        };
+        fixture.Api.Use(responses);
+        var refresh = fixture.Session.RefreshAsync(DashboardRefreshReason.Periodic);
+        await finalGate.EnteredAsync();
+
+        var clear = fixture.Session.ClearCacheAsync();
+        await finalGate.CanceledAsync();
+        Assert.NotSame(clear, await Task.WhenAny(clear, Task.Delay(200)));
+
+        finalGate.Release();
+        await refresh.WaitAsync(RefreshSessionFixture.Timeout);
+        var result = await clear.WaitAsync(RefreshSessionFixture.Timeout);
+
+        Assert.False(result.Succeeded);
+        Assert.False(fixture.Session.State.IsRefreshing);
+        Assert.Equal(0, cache.RecordCount);
+    }
+
+    [Fact]
     public async Task FailedPostClearRefreshCannotRepopulateOrBecomeFreshnessInput()
     {
         var cache = new MemoryDashboardCacheStore();

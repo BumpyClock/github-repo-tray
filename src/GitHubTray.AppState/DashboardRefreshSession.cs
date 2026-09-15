@@ -471,6 +471,14 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         }
         finally
         {
+            try
+            {
+                await refreshTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // The refresh task remains observable by its original callers.
+            }
             refreshCancellation?.Dispose();
         }
 
