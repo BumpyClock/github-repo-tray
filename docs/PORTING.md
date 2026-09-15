@@ -33,25 +33,43 @@ milestone. The app currently uses the official WinUI template's placeholder icon
 
 | Component | Responsibility |
 | --- | --- |
-| `GitHubTray.Core` | Domain snapshot, safe URL/JSON boundary, GitHub CLI process lifecycle, read-only REST and GraphQL queries, settings storage. No WinUI dependency. |
-| `GitHubTray.AppState` | App-owned refresh session: single-flight refresh, retained recovery data, immutable published state, refresh cancellation and draining. References Core, with no WinUI dependency. |
+| `GitHubTray.Core` | Domain snapshot, explicit refresh reasons, section-freshness selection, safe URL/JSON boundary, GitHub CLI process lifecycle, read-only REST and GraphQL queries, settings storage, and versioned account-cache persistence/clearing. No WinUI dependency. |
+| `GitHubTray.AppState` | App-owned refresh session: single-flight refresh, retained recovery data, clear-generation fencing, coalesced forced manual follow-up, immutable published state, refresh cancellation and draining. References Core, with no WinUI dependency. |
 | `GitHubTray.App` | WinUI views and MVVM projection, native refresh scheduling, settings orchestration, Windows notification-area lifecycle, window placement, browser launching. |
 | `GitHubTray.Core.Tests` | Deterministic response fixtures; no live authentication or network dependency. |
 | `GitHubTray.AppState.Tests` | Production refresh-session and Core behavior with fixture transport responses; no WinUI runtime, live authentication, or network dependency. |
 | `GitHubTray.App.Tests` | Source-linked production heatmap view-model tests without a WinUI runtime or live data. |
 
-The App-owned refresh session distinguishes two kinds of dashboard data:
+The App-owned refresh session distinguishes three kinds of dashboard data:
 
 - **Retained dashboard:** account-scoped data kept privately for recovery after a
   failed refresh; its presence does not make it eligible for display.
+- **Verified cached dashboard:** durable per-section successes published only
+  after the initial identity request matches their GitHub.com host and stable
+  account ID. Cached sections retain their original timestamps and provenance.
 - **Published dashboard:** data currently eligible for display under a verified
   account; individual sections may be visibly stale.
 
 The session exposes one immutable current state and shares one in-flight refresh
-across startup, timer, toolbar, keyboard, and tray requests. WinUI projects that
+across startup, timer, toolbar, keyboard, and tray requests. Entry points carry
+`Startup`, `Periodic`, or `Manual` through the session into Core. WinUI projects
 state into bindings on the UI thread; it does not own a second recovery snapshot.
 An identity failure removes rows and the calendar from the published state and
 the projection, while the session retains recovery data privately.
+
+Core evaluates same-account successful-section timestamps after the initial
+identity operation. Startup can reuse Activity and both PR lists while they are
+younger than the configured refresh interval. Periodic cycles always fetch those
+three sections. Repositories and contributions use a 15-minute automatic window;
+Copilot uses five minutes. Boundaries are exclusive: age equal to the window
+requires a fetch. Manual refresh bypasses every window.
+
+The `DashboardRefreshSession` constructor accepts an optional recovery snapshot
+and its configured interval. That is the hydration seam for a later durable store:
+in-memory recovery and hydrated recovery enter the same Core policy, with no
+second TTL implementation or identity probe. The seed remains private until the
+normal initial and final identity checks succeed. Reuse returns the original
+section object, timestamp, successful-empty state, and failure provenance.
 
 Core resolves `/user` before requesting account-specific data and verifies the account
 again before publishing the completed snapshot. A detected account change,
@@ -67,17 +85,58 @@ refreshes, cancels and drains its active refresh, and prevents late publication.
 The App also waits for initialization and settings work before closing.
 While hidden, the panel stops only its local timestamp/countdown clock and catches
 up on reveal. Scheduled API refresh continues at the configured interval.
+The repeating timer is not restarted when a refresh completes, so Activity and
+PR cadence stays tied to scheduled ticks rather than completion time. If a manual
+request overlaps an automatic cycle that reused sections, the shared flight runs
+at most one forced full follow-up. More manual triggers share that same task.
+Cancelling a caller's `WaitAsync` does not cancel session-owned work; only session
+shutdown controls the lifetime token.
 
 The primary instance starts its initial refresh before constructing the window.
 Window initialization adopts that exact session and refresh task, including an
 already-completed task, rather than issuing a second startup refresh. Settings
 loading runs independently of the initial data projection. The panel opens
 immediately with loading feedback; early fetching overlaps setup without delaying
-the first show or weakening the account-verification boundary.
+the first show or weakening the account-verification boundary. The initial
+identity request also owns startup hydration: after it verifies the host/account,
+the session can publish matching retained sections before delayed live requests
+finish. The persisted refresh interval loads concurrently and is applied before
+startup Activity/PR freshness selection, without delaying that verified cached
+publication. Cache misses and identity failures do not add another identity probe.
 
-Activity data stays in memory and is not persisted to disk. The refresh interval
-and contribution cell-size preset are stored locally. A malformed settings file produces a visible warning;
-it is replaced only when the user explicitly saves a valid setting.
+Successful dashboard sections are persisted under the app's user-local
+`dashboard-cache` directory, separate from `settings.json`. Records use
+source-generated JSON, a document schema revision, per-section/query revisions,
+and host/stable-user-ID partitions. Each section expires independently at an age
+of seven days; equality with the seven-day boundary is expired. Reads and failed
+refreshes do not renew timestamps. Atomic replacement and a single store gate
+protect the last valid record from failed, cancelled, or concurrent writes.
+Malformed, incompatible, expired, and inaccessible records become explicit cache
+miss diagnostics without preventing live data from loading.
+
+The settings surface exposes **Clear cached data** for every cached account.
+Clearing advances both store and refresh-session invalidation generations, removes
+only cache-owned account records and interrupted temporary writes, clears private
+recovery/freshness input, and forces the next accepted refresh to fetch all six
+sections. The current published snapshot may remain rendered but is not passed
+back to Core as reusable state. A pre-clear read, write, hydrated publication, or
+refresh completion cannot cross the generation fence; only verified post-clear
+successes can repopulate storage. Manual refresh from the tray, accelerator, or
+other entry point during deletion shares one task that covers clearing and one
+forced full refresh afterward.
+
+Deletion runs away from the UI thread and is serialized with reads and atomic
+writes. Concurrent clear requests share one task. Shutdown cancels and drains
+clearing with other accepted lifecycle work. Partial deletion reports exact
+deleted/failed file counts and keeps the session invalidated; it never claims
+success or deletes `settings.json`, credentials, or unrelated files.
+
+The refresh interval and contribution cell-size preset remain in the settings
+file. A malformed settings file produces a visible warning; it is replaced only
+when the user explicitly saves a valid setting. Cache records can contain private
+dashboard metadata and Copilot quota details, but never credentials,
+authorization headers, or raw authentication errors. The initial identity
+request is mandatory, so retained data is not an offline cold-start mode.
 
 ## GitHub contract
 
@@ -113,8 +172,9 @@ Copilot CLI subprocess or a separate OAuth flow. The response login must match
 the initially verified GitHub account, and the existing final identity check
 still gates publication. Missing access, malformed responses and unknown quota
 schemas produce a section error; account mismatches reject the full refresh.
-Last-success usage is immutable, memory-only, account-scoped and visibly stale
-after a failed request. It shares the dashboard's single-flight refresh and
+Last-success usage is immutable, account-scoped, eligible for the same
+seven-day durable retention, and visibly stale after a failed request. It shares
+the dashboard's single-flight refresh and
 shutdown cancellation rather than adding a timer or retry loop.
 
 `quota_snapshots` supplies premium interactions, chat and completions.
@@ -185,9 +245,20 @@ GitHub CLI chooses credentials, including `GH_TOKEN` / `GITHUB_TOKEN` environmen
 precedence and its current saved account. The app does not change that selection.
 All requests explicitly target GitHub.com. Each CLI call has a 30-second timeout.
 Refresh defaults to five minutes and is configurable from one to sixty minutes.
-Errors do not trigger an immediate retry loop; the next scheduled or manual
-refresh is the next attempt. Last-success retention is per process, not durable
-offline caching. Browser links are restricted to HTTPS GitHub.com URLs.
+Errors do not trigger an immediate retry loop. A manual refresh always retries
+all sections; automatic retries follow the section freshness policy and preserve
+an eligible prior success's original timestamp and error. Eligible per-section
+successes are durable across restarts, but remain hidden until the initial online
+identity verification succeeds. Browser links are restricted to HTTPS GitHub.com
+URLs.
+
+A normal authenticated full refresh has eight operations: initial identity, six
+section operations, and final identity. With all non-cadence sections fresh, a
+periodic cycle has five operations: both identities plus Activity and both PR
+lists. An all-fresh eligible hydrated startup has only the two identity
+operations. Tests assert these shapes and the absence of skipped transport calls.
+No live cold/warm GitHub timing was captured, so these counts are evidence of
+avoided requests and subprocesses, not a measured speedup.
 
 The heatmap view model owns selection transitions and returns immutable previous
 and current selections for keyboard input, pointer input, and calendar replacement.
@@ -279,7 +350,7 @@ details belong to later milestones. No unimplemented statistics are fabricated.
 | Milestone | Scope and prerequisite decisions |
 | --- | --- |
 | Repository dashboard | Pinned repositories, CI/check status, separate issue/PR counts, releases, repository-specific graphs. Agree selection and permissions first. |
-| Durable offline experience | Account-partitioned response cache, ETags, TTLs, rate-limit reset/backoff scheduling, data retention and sign-out cleanup. |
+| Advanced cache policy | ETags, rate-limit reset/backoff scheduling, and sign-out cleanup. |
 | Native authentication | Register our own OAuth/GitHub App; device/browser flow, Windows credential storage, revocation, and minimal documented permissions. Never reuse upstream credentials. |
 | Multi-account / Enterprise | Explicit account/host selection, host validation, per-account caches, organization SSO diagnostics. |
 | Windows distribution | Final product identity/icon, signed MSIX, installation/update strategy, opt-in launch at sign-in, x64 and ARM64 release checks. |

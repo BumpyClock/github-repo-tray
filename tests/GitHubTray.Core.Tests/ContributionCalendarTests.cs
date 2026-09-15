@@ -380,7 +380,13 @@ public sealed class ContributionCalendarTests
             if (endpoint == "user")
             {
                 if (FailUser) throw new GitHubException("Signed out");
-                return JsonSerializer.Serialize(new { login = Login, name = Login, html_url = $"https://github.com/{Login}" });
+                return JsonSerializer.Serialize(new
+                {
+                    id = string.Equals(Login, "octocat", StringComparison.OrdinalIgnoreCase) ? 1 : 2,
+                    login = Login,
+                    name = Login,
+                    html_url = $"https://github.com/{Login}"
+                });
             }
             if (BeforeSection is not null) await BeforeSection(cancellationToken);
             if (FailRestSections) throw new GitHubException("Safe offline message");

@@ -1,4 +1,5 @@
 using GitHubTray.AppState;
+using GitHubTray.Core;
 
 namespace GitHubTray_App.ViewModels;
 
@@ -13,7 +14,7 @@ internal sealed class DashboardStartup : IAsyncDisposable
     private DashboardStartup(DashboardRefreshSession session)
     {
         Session = session;
-        RefreshTask = session.RefreshAsync();
+        RefreshTask = session.RefreshAsync(DashboardRefreshReason.Startup);
     }
 
     public DashboardRefreshSession Session { get; }
@@ -62,16 +63,23 @@ internal sealed class DashboardStartup : IAsyncDisposable
 
     private async Task ObserveRefreshAsync(Action<DashboardSessionState> projectState)
     {
-        var initial = Session.State;
-        projectState(initial);
+        var projected = Session.State;
+        projectState(projected);
         try
         {
+            await Session.InitialHydrationTask;
+            var hydrated = Session.State;
+            if (!ReferenceEquals(projected, hydrated))
+            {
+                projectState(hydrated);
+                projected = hydrated;
+            }
             await RefreshTask;
         }
         finally
         {
             var completed = Session.State;
-            if (!ReferenceEquals(initial, completed))
+            if (!ReferenceEquals(projected, completed))
             {
                 projectState(completed);
             }

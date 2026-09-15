@@ -265,7 +265,12 @@ public sealed class PullRequestTests
 
         public Task<string> GetAsync(string endpoint, CancellationToken cancellationToken = default) =>
             Task.FromResult(endpoint == "user"
-                ? JsonSerializer.Serialize(new { login = Login, html_url = $"https://github.com/{Login}" }) : "[]");
+                ? JsonSerializer.Serialize(new
+                {
+                    id = string.Equals(Login, "octocat", StringComparison.OrdinalIgnoreCase) ? 1 : 2,
+                    login = Login,
+                    html_url = $"https://github.com/{Login}"
+                }) : "[]");
 
         public Task<string> QueryAsync(string query, CancellationToken cancellationToken = default)
         {

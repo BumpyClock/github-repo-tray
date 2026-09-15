@@ -20,5 +20,6 @@ public sealed record ContributionSection(
     DateTimeOffset? UpdatedAt,
     string? Error)
 {
+    public DashboardSectionSource Source { get; init; } = DashboardSectionSource.Live;
     public bool IsStale => Calendar is not null && Error is not null;
 }

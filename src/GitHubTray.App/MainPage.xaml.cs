@@ -61,6 +61,28 @@ public sealed partial class MainPage : Page
     private void RetryTrayButton_Click(object sender, RoutedEventArgs e) => _window.RetryTray();
     private async void QuitButton_Click(object sender, RoutedEventArgs e) => await _window.QuitAsync();
 
+    private async void ClearCachedDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ViewModel.CanClearCachedData)
+        {
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Clear cached dashboard data?",
+            Content = "Saved dashboard data for every cached GitHub account on this device will be removed. GitHub CLI authentication and settings are preserved. The current dashboard may remain visible, but the next refresh fetches every section.",
+            PrimaryButtonText = "Clear cached data",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            await ViewModel.ClearCachedDataAsync();
+        }
+    }
+
     private void BackButton_Click(object sender, RoutedEventArgs e)
     {
         ViewModel.IsSettingsOpen = false;

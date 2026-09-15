@@ -16,7 +16,10 @@ not a full feature-parity release.
 - Your recently pushed repositories, including accessible private repositories.
 - Native tray panel, browser links, manual refresh, and periodic refresh.
 - A configurable refresh interval, with visible errors and last-success data
-  retained in memory when individual requests fail.
+  retained per account when individual requests fail.
+- Verified warm-start restoration from a versioned, account-scoped local cache.
+- Section-level automatic freshness reuse that avoids launching `gh` for eligible
+  same-account data while keeping manual Refresh fully forced.
 
 Each activity list shows up to 30 recent items. Activity comes from GitHub's
 Events API, which can be delayed; it is not a contribution count or notifications
@@ -40,8 +43,10 @@ card, ordered by its latest event and showing the latest action and event count.
 Pushes, issues, releases, and other non-PR activity remain separate entries.
 Standalone repository workflow runs are not included.
 
-PRs and checks refresh together on the existing schedule or with **Refresh**
-(F5). These are snapshots, not a streaming CI feed. The API returns at most 30
+Activity, PRs, and checks refresh together on every existing periodic tick or
+with **Refresh** (F5). At startup only, a supplied same-account success younger
+than the configured refresh interval can be reused. These are snapshots, not a
+streaming CI feed. The API returns at most 30
 authored PRs or review requests, 10 labels and 100 check contexts per PR, including
 legacy commit statuses. Truncated lists disclose the total instead of claiming
 exact progress.
@@ -55,6 +60,13 @@ No checks, unknown state, running, queued, failed, cancelled, neutral, and skipp
 checks are not treated as passing. A failed PR refresh retains the previous
 same-account cards with a stale indicator; no last-success data is reused across
 accounts.
+
+Repositories and contributions use a 15-minute automatic freshness window.
+Copilot usage uses five minutes. The exact boundary is expired, and these longer
+windows do not create additional timer ticks. **Refresh** always requests all six
+sections regardless of age. Automatic reuse keeps the original successful-fetch
+timestamp and any known section failure; an empty successful list remains a real
+success rather than being confused with an unavailable section.
 
 The contribution plot keeps all seven weekday rows visible. Its borderless
 container shrinks with the selected cell size. There is no gesture/keyboard zoom,
@@ -110,8 +122,10 @@ which may differ from the account in Copilot CLI. The read-only
 `copilot_internal/user` endpoint is undocumented and may change or deny access
 for some accounts or credentials. A failed usage request shows an explicit
 error without blocking contributions or activity; only a verified same-account
-last-success snapshot can remain visible, marked stale. Usage refreshes on the
-existing schedule and with **Refresh**, and is never saved to disk.
+last-success snapshot can remain visible, marked stale. Automatic ticks may reuse
+usage younger than five minutes, while **Refresh** always fetches it. Successful
+usage snapshots are retained in the same account-scoped dashboard cache as the
+other sections; credentials and raw authentication errors are never stored.
 
 The percentage comes directly from GitHub's `percent_remaining` field, displayed
 as percentage used. The app does not infer request counts, currency, or credit
@@ -164,9 +178,52 @@ Use **Quit** to stop the app rather than merely close its panel.
 On first launch, the initial refresh starts before the window is constructed and
 overlaps UI initialization and settings loading. The panel still opens immediately
 with loading feedback; it does not wait for GitHub before appearing. Network
-requests and account verification must finish before fresh data can be shown.
+account verification must succeed before any persisted data can be shown. After
+the existing initial `GET /user` verifies the GitHub.com host and stable account
+ID, eligible retained sections for that account are published with **Cached from**
+timestamps while the normal live section requests continue. The final identity
+check and GraphQL viewer checks still gate the replacement live snapshot.
 Subsequent tray opens use the current verified in-memory snapshot, with periodic
 refresh continuing while the panel is hidden.
+
+The dashboard cache lives under the app's user-local data folder in a
+`dashboard-cache` directory, separate from `settings.json`. Records are
+partitioned by GitHub host and stable user ID and retain the login for display.
+Each section has its own original successful-fetch timestamp and representation
+revision. A section is reusable for less than seven days; at the exact seven-day
+boundary it is pruned. Successful empty responses replace older nonempty data,
+while failed refreshes do not renew retention. Writes replace an account record
+atomically, so a failed or cancelled write leaves the previous valid record.
+
+The cache can contain dashboard content visible to the authenticated account,
+including private repository metadata and Copilot quota details. It never stores
+GitHub credentials, authorization headers, or raw authentication diagnostics.
+There is no offline cold-start view: if the initial identity request fails or
+cannot complete, persisted rows remain hidden. Automatic refresh may reuse
+eligible sections according to the freshness windows above; a manual full refresh
+still performs the existing eight API operations.
+
+**Preferences > Clear cached data** removes every dashboard record owned by the
+cache store for all cached accounts on this device. It does not sign out of
+GitHub CLI, delete credentials, or reset the refresh interval or contribution
+cell size. The currently rendered dashboard can remain visible after clearing,
+but it is no longer reusable and cannot satisfy automatic freshness checks. The
+next accepted refresh fetches every section with the normal initial/final identity
+and GraphQL viewer safeguards. Only successful post-clear section results can be
+saved again. A tray, keyboard, or other manual refresh requested while clearing
+waits for deletion and then runs one coalesced forced full refresh.
+
+Clearing is coordinated with cache reads, writes, and refresh completion so work
+started before the action cannot recreate deleted data. Repeated clear requests
+share the active operation. If Windows cannot delete every owned cache file, the
+settings page reports the deleted and remaining file counts instead of claiming
+complete success; retry after closing anything using the app's local-data folder.
+Settings and unrelated files are never part of the deletion set.
+
+Deterministic startup tests record the first-data behavior rather than a timing
+claim: a cold start first publishes live results, while a warm start can publish
+verified retained data after the initial identity request and before deliberately
+delayed live sections. This is not a measured startup-speed guarantee.
 
 Before redeploying, quit the running app and let any previous
 `winapp run --debug-output` session end. A debugger-attached instance can hold
@@ -201,7 +258,9 @@ does not turn it into an unpackaged or single-file portable app. Package the
 **publish output**, not the managed build output. Keep the generated `.pdb` for
 native crash diagnosis.
 
-Settings use source-generated JSON metadata without changing the on-disk format.
+Settings and the versioned dashboard cache use source-generated JSON metadata.
+The cache path is separately validated with reflection-based serialization
+disabled.
 WinRT controls and automation peers support generated interop, and the dynamic
 accessibility-name binding uses generated property metadata. AOT/trim diagnostics
 remain enabled; CI publishes x64 with warnings treated as errors.
@@ -235,20 +294,31 @@ dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj
 .\scripts\Test-RuntimeIdentifiers.ps1
 ```
 
-The core tests use deterministic fixtures and temporary settings files. They do
+The core tests use deterministic fixtures and temporary settings/cache files. They do
 not require GitHub authentication or make network requests.
 The refresh-session tests run the production App-state module and Core fetching
 with fixture responses, without WinUI. They cover overlapping refresh requests,
-account-safe publication and recovery, immutable snapshots, and shutdown.
+account-safe cache hydration/publication and recovery, immutable snapshots,
+retention and freshness boundaries, clear-versus-read/write/refresh fencing,
+forced uncached refreshes, repeated clearing, forced manual follow-ups,
+caller-wait cancellation, and shutdown.
 The App tests compile the production heatmap view model and viewport geometry
 without WinUI and cover selection transitions, date retention, coherent property
 notifications, pixel-aligned preset sizes, and right-edge anchoring.
-They also cover startup fetch/setup overlap, single-flight handoff and shutdown,
+They also cover verified warm-start projection, startup fetch/setup overlap,
+single-flight handoff and shutdown,
 deferred check-detail creation and recycling, and hidden-panel presentation-clock
 behavior. These lifecycle tests use fixture data rather than live GitHub requests.
 The runtime checks verify x86/x64/ARM64 selection, preservation of an explicitly
 supplied runtime identifier, all three publish profiles, and Debug isolation.
-CI also checks the native published executable and reruns the settings tests with
+
+Deterministic request-count coverage records eight API operations for a normal
+authenticated full refresh, five for a fresh periodic cycle (two identities plus
+Activity and both PR lists), and two identity operations for an all-fresh eligible
+hydrated startup snapshot. Each skipped operation also avoids its associated `gh`
+subprocess. No live cold/warm GitHub timing was measured for this change, so no
+runtime speedup is claimed.
+CI also checks the native published executable and reruns the JSON persistence tests with
 `-p:JsonSerializerIsReflectionEnabledByDefault=false` to catch reflection regressions.
 
 For native selection checks, open the running tray panel with a loaded calendar:

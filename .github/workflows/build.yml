@@ -56,8 +56,8 @@ jobs:
       - name: Run core tests
         run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore -p:ContinuousIntegrationBuild=true
 
-      - name: Test settings without reflection-based JSON
-        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore --filter FullyQualifiedName~SettingsStoreTests -p:JsonSerializerIsReflectionEnabledByDefault=false -p:ContinuousIntegrationBuild=true
+      - name: Test persistence without reflection-based JSON
+        run: dotnet test .\tests\GitHubTray.Core.Tests\GitHubTray.Core.Tests.csproj --configuration Debug --no-restore --filter "FullyQualifiedName~SettingsStoreTests|FullyQualifiedName~DashboardCacheStoreTests" -p:JsonSerializerIsReflectionEnabledByDefault=false -p:ContinuousIntegrationBuild=true
 
       - name: Run App state tests
         run: dotnet test .\tests\GitHubTray.App.Tests\GitHubTray.App.Tests.csproj --configuration Debug -p:ContinuousIntegrationBuild=true

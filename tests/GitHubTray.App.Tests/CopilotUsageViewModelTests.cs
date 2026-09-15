@@ -74,6 +74,17 @@ public sealed class CopilotUsageViewModelTests
     }
 
     [Fact]
+    public void CachedUsageHasExplicitProvenanceWhileLiveRefreshContinues()
+    {
+        var cached = Section() with { Source = DashboardSectionSource.Cached };
+        var display = CopilotUsageViewModel.Create(cached, true, true);
+        Assert.Single(display.Quotas);
+        Assert.Contains("Cached from", display.Status);
+        Assert.Contains("Refreshing", display.Status);
+        Assert.False(display.HasError);
+    }
+
+    [Fact]
     public void LegacyAndUnlimitedPremiumDoNotClaimCreditUsageOrInventAMeter()
     {
         var row = new CopilotQuotaViewModel(new(CopilotQuotaKind.PremiumInteractions,
