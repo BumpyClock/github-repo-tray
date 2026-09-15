@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using WinRT;
 using Windows.Storage;
+using Windows.UI.ViewManagement;
 
 namespace GitHubTray_App;
 
@@ -19,7 +20,10 @@ public sealed partial class MainWindow : Window
     private const string WindowFrameError = "Windows could not remove the native window outline.";
     private const string LightIconFileName = "AppIcon.ico";
     private const string DarkIconFileName = "AppIconDark.ico";
+    private const string HighContrastIconFileName = "AppIconHighContrast.ico";
     private readonly MainPage _page;
+    private readonly AccessibilitySettings _accessibility = new();
+    private readonly UISettings _systemColors = new();
     private readonly DispatcherQueueTimer _dismissTimer;
     private TrayIcon? _trayIcon;
     private bool _hasAcrylicBackdrop;
@@ -49,6 +53,10 @@ public sealed partial class MainWindow : Window
         ConfigureBackdrop();
         AppWindow.IsShownInSwitchers = false;
         RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
+        // High contrast toggles do not raise ActualThemeChanged, and
+        // AccessibilitySettings.HighContrastChanged requires a UWP window,
+        // so the system colour feed is what keeps the icon in step.
+        _systemColors.ColorValuesChanged += SystemColors_ColorValuesChanged;
         AppWindow.SetIcon(GetThemeIconPath());
         _dismissTimer = DispatcherQueue.CreateTimer();
         _dismissTimer.Interval = TimeSpan.FromMilliseconds(180);
@@ -64,7 +72,25 @@ public sealed partial class MainWindow : Window
     private string GetThemeIconPath() => Path.Combine(
         AppContext.BaseDirectory,
         "Assets",
-        RootGrid.ActualTheme == ElementTheme.Dark ? DarkIconFileName : LightIconFileName);
+        GetThemeIconFileName());
+
+    private string GetThemeIconFileName()
+    {
+        // The high contrast art is a white silhouette, so it only reads against a dark scheme;
+        // a light high contrast scheme keeps the dark-glyph icon instead.
+        if (_accessibility.HighContrast)
+        {
+            return IsDarkSystemBackground() ? HighContrastIconFileName : LightIconFileName;
+        }
+
+        return RootGrid.ActualTheme == ElementTheme.Dark ? DarkIconFileName : LightIconFileName;
+    }
+
+    private bool IsDarkSystemBackground()
+    {
+        var background = _systemColors.GetColorValue(UIColorType.Background);
+        return (background.R * 299 + background.G * 587 + background.B * 114) / 1000 < 128;
+    }
 
     private void ConfigureBackdrop()
     {
@@ -174,7 +200,18 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void RootGrid_ActualThemeChanged(FrameworkElement sender, object args)
+    private void RootGrid_ActualThemeChanged(FrameworkElement sender, object args) => ApplyThemeIcon();
+
+    private void SystemColors_ColorValuesChanged(UISettings sender, object args) =>
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_isQuitting)
+            {
+                ApplyThemeIcon();
+            }
+        });
+
+    private void ApplyThemeIcon()
     {
         var iconPath = GetThemeIconPath();
         AppWindow.SetIcon(iconPath);
@@ -279,6 +316,7 @@ public sealed partial class MainWindow : Window
         _dismissTimer.Stop();
         _dismissTimer.Tick -= DismissTimer_Tick;
         RootGrid.ActualThemeChanged -= RootGrid_ActualThemeChanged;
+        _systemColors.ColorValuesChanged -= SystemColors_ColorValuesChanged;
         _trayIcon?.Dispose();
         _trayIcon = null;
         try
