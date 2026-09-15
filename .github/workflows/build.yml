@@ -59,7 +59,7 @@ jobs:
         run: dotnet test .\tests\GitHubTray.AppState.Tests\GitHubTray.AppState.Tests.csproj --configuration Debug --no-build --no-restore -p:Platform=x64 -p:ContinuousIntegrationBuild=true
 
       - name: Publish NativeAOT app
-        run: dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Release --runtime win-x64 --no-restore -p:Platform=x64 -p:PublishProfile= -p:ContinuousIntegrationBuild=true -warnaserror --output .\artifacts\nativeaot\win-x64
+        run: dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj --configuration Release --runtime win-x64 -p:Platform=x64 -p:PublishProfile= -p:ContinuousIntegrationBuild=true -warnaserror --output .\artifacts\nativeaot\win-x64
 
       - name: Verify NativeAOT executable
         run: .\scripts\Test-NativeAot.ps1 -PublishDirectory .\artifacts\nativeaot\win-x64
