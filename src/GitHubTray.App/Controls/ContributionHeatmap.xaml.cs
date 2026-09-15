@@ -29,6 +29,7 @@ public sealed partial class ContributionHeatmap : UserControl
     public ContributionHeatmap()
     {
         InitializeComponent();
+        PlotOverlay.Margin = new Thickness(0, ContributionViewport.TopInset, 0, 0);
         LostFocus += (_, _) => CloseSelectionTooltip();
         PlotOverlay.SizeChanged += (_, _) => UpdatePlotClip();
     }

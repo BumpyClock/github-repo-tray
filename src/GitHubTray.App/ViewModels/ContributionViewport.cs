@@ -14,7 +14,9 @@ internal static class ContributionViewport
 {
     public const double PlotHeight = 164;
     public const double ScrollbarSpace = 12;
-    public const double TopInset = 8;
+    // The plot already sits below the account header's own bottom margin, so it only
+    // needs a hairline of breathing room of its own.
+    public const double TopInset = 4;
     // Removing the chart-only insets expands content from 368 to 388 DIPs in the 420-DIP panel.
     private const double TextAlignedCellScale = 388.0 / 368.0;
 

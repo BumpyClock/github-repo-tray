@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using GitHubTray.Core;
 
@@ -46,17 +47,21 @@ public sealed record CopilotQuotaViewModel(CopilotQuota Quota)
 
 public sealed record CopilotUsageViewModel(
     string Plan,
-    ReadOnlyCollection<CopilotQuotaViewModel> Quotas,
+    ImmutableArray<CopilotQuotaViewModel> Quotas,
     string Status,
     bool HasError)
 {
     public bool HasStatus => Status.Length > 0;
+
+    // Adapt once per binding update; boxed ImmutableArray is not a NativeAOT WinRT ItemsSource.
+    public ReadOnlyCollection<CopilotQuotaViewModel> GetQuotaItems() => Array.AsReadOnly(Quotas.ToArray());
+
     public static CopilotUsageViewModel Create(
         CopilotUsageSection? section, bool verified, bool refreshing, DateTimeOffset? now = null)
     {
         if (!verified)
         {
-            return new("", Array.AsReadOnly<CopilotQuotaViewModel>([]), refreshing ? "Loading Copilot usage..."
+            return new("", [], refreshing ? "Loading Copilot usage..."
                 : "Copilot usage hidden until the GitHub CLI account is verified.", false);
         }
 
@@ -79,14 +84,13 @@ public sealed record CopilotUsageViewModel(
             {
                 Plan = index == 0 ? plan : "",
                 ObservedAt = observedAt
-            }).ToArray() ?? [];
+            }).ToImmutableArray() ?? [];
         var status = section?.Error is { } error
             ? $"{(section.IsStale ? "Stale usage" : "Usage unavailable")}: {error}" +
                 (section.UpdatedAt is { } updated ? $" Last success {updated.ToLocalTime():g}." : "")
             : refreshing ? "Refreshing Copilot usage..."
             : usage is null ? "Copilot usage has not been loaded."
-            : rows.Length == 0 ? "No metered Copilot quota." : "";
-        // WinRT ItemsSource rejects boxed ImmutableArray values in NativeAOT builds.
-        return new(plan, Array.AsReadOnly(rows), status, section?.Error is not null);
+            : rows.IsEmpty ? "No metered Copilot quota." : "";
+        return new(plan, rows, status, section?.Error is not null);
     }
 }

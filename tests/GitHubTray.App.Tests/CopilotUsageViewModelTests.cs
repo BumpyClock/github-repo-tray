@@ -20,10 +20,9 @@ public sealed class CopilotUsageViewModelTests
     public void QuotaItemsExposeAReferenceTypeReadOnlyListForNativeBinding(bool verified)
     {
         var display = CopilotUsageViewModel.Create(Section(), verified, false);
-        object source = display.Quotas;
+        object source = display.GetQuotaItems();
 
         Assert.False(source.GetType().IsValueType);
-        Assert.Same(source, display.Quotas);
         var items = Assert.IsAssignableFrom<IList>(source);
         Assert.Equal(verified ? 1 : 0, items.Count);
         Assert.True(items.IsReadOnly);

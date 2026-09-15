@@ -8,7 +8,7 @@
     <Border BorderThickness="0,1,0,0" Padding="0,12,0,0"
             BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
     <StackPanel Spacing="8">
-        <ItemsControl ItemsSource="{x:Bind ViewModel.Quotas, Mode=OneWay}">
+        <ItemsControl ItemsSource="{x:Bind ViewModel.GetQuotaItems(), Mode=OneWay}">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                     <StackPanel Spacing="12" />

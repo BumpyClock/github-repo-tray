@@ -79,8 +79,9 @@
     </UserControl.Resources>
     <StackPanel Spacing="4">
         <Grid x:Name="GraphContainer">
-                <Grid x:Name="PlotOverlay" Margin="0,8,0,0">
-                    <ScrollViewer x:Name="PlotScroll" Padding="0,0,0,12" IsTabStop="False" UseLayoutRounding="True"
+                <!-- Insets come from ContributionViewport so the container height stays in step. -->
+                <Grid x:Name="PlotOverlay">
+                    <ScrollViewer x:Name="PlotScroll" IsTabStop="False" UseLayoutRounding="True"
                                   HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled"
                                   HorizontalContentAlignment="Left" VerticalContentAlignment="Center"
