@@ -296,6 +296,8 @@ latest returned day; an unavailable calendar clears selection. The native contro
 synchronizes the outline after any cell rebuild, even when the accessible value
 is unchanged. Changed values raise UI Automation value-property notifications;
 only changed user selections request a polite live-region announcement.
+Day cells reuse one localized description for their automation name and hover
+tooltip.
 Returning to the present reuses cell geometry when viewport width, DPI, week
 count, and preset are unchanged, while still restoring selection and scroll
 position. Replacing cells or reactivating the graph invalidates that geometry.
