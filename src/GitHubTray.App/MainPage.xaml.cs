@@ -29,6 +29,14 @@ public sealed partial class MainPage : Page
         _window = window;
         _keyDownHandler = OnPageKeyDown;
         InitializeComponent();
+        ModeSelector.Loaded += ModeSelector_Loaded;
+        AddHandler(KeyDownEvent, _keyDownHandler, true);
+    }
+
+    private void ModeSelector_Loaded(object sender, RoutedEventArgs args)
+    {
+        if (_released) return;
+        // Restore selection after SelectorBar initializes its internal ItemsView.
         for (var index = 0; index < ViewModel.Sections.Count && index < ModeSelector.Items.Count; index++)
         {
             if (ReferenceEquals(ViewModel.Sections[index], ViewModel.SelectedSection))
@@ -38,7 +46,6 @@ public sealed partial class MainPage : Page
             }
         }
         _initializing = false;
-        AddHandler(KeyDownEvent, _keyDownHandler, true);
     }
 
     public DashboardViewModel ViewModel { get; }
@@ -47,17 +54,6 @@ public sealed partial class MainPage : Page
     public static Visibility Hidden(bool value) => value ? Visibility.Collapsed : Visibility.Visible;
     public static bool Not(bool value) => !value;
     public static bool HasError(string? error) => error is not null;
-
-    public void SetPanelVisible(bool visible)
-    {
-        if (_released) return;
-        ViewModel.SetPanelVisible(visible);
-        ContributionGraph.SetPanelVisible(visible);
-        if (visible)
-        {
-            ContributionGraph.ReturnToPresent();
-        }
-    }
 
     public void OpenSettings()
     {
@@ -87,6 +83,7 @@ public sealed partial class MainPage : Page
         RemoveHandler(KeyDownEvent, _keyDownHandler);
         DashboardList.ContainerContentChanging -= DashboardList_ContainerContentChanging;
         DashboardList.ItemClick -= DashboardList_ItemClick;
+        ModeSelector.Loaded -= ModeSelector_Loaded;
         ModeSelector.SelectionChanged -= ModeSelector_SelectionChanged;
 
         _clearCacheDialog?.Hide();
@@ -148,7 +145,6 @@ public sealed partial class MainPage : Page
                 tooltip.IsOpen = false;
                 tooltip.PlacementTarget = null;
                 tooltip.Content = null;
-                tooltip.XamlRoot = null;
             }
             ToolTipService.SetToolTip(element, null);
             if (element is FrameworkElement frameworkElement)
@@ -267,7 +263,7 @@ public sealed partial class MainPage : Page
     {
         if (!_released && e.ClickedItem is DashboardRow row)
         {
-            await OpenRowAsync(row);
+            await OpenRowAsync(row, row.Item.Url);
         }
     }
 
@@ -275,7 +271,7 @@ public sealed partial class MainPage : Page
     {
         if (!_released && sender is MenuFlyoutItem { Tag: DashboardRow row })
         {
-            await OpenRowAsync(row);
+            await OpenRowAsync(row, row.Item.Url);
         }
     }
 
@@ -314,9 +310,6 @@ public sealed partial class MainPage : Page
         if (presentation.ChecksUri is { } uri)
             await OpenRowAsync(row, uri);
     }
-
-    private async Task OpenRowAsync(DashboardRow row)
-        => await OpenRowAsync(row, row.Item.Url);
 
     private async Task OpenRowAsync(DashboardRow row, Uri uri)
     {

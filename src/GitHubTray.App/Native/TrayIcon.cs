@@ -71,12 +71,7 @@ internal sealed class TrayIcon : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
 
-            _icon = NativeMethods.LoadImage(0, iconPath, 1, 32, 32, 0x10);
-            if (_icon == 0)
-            {
-                throw new Win32Exception("The notification icon could not be loaded.");
-            }
-
+            UpdateIcon(iconPath);
             if (!TryAddIcon())
             {
                 throw new Win32Exception("Windows did not accept the notification icon.");

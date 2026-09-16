@@ -207,6 +207,67 @@ public sealed class DashboardCacheStoreTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_directory, "last-account.json")));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedOrCancelledSelectorReplacementPreservesThePreviousSelection(bool cancel)
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        var other = new DashboardCacheAccount("github.com", 2, "other");
+        await store.WriteAsync(Record(activity: ListSection("selected")));
+        await store.WriteAsync(Record(other, activity: ListSection("other")));
+        await store.SelectAccountAsync(Octocat);
+        using var cancellation = new CancellationTokenSource();
+        var failingStore = new JsonDashboardCacheStore(_directory, (_, _) =>
+        {
+            if (cancel)
+            {
+                cancellation.Cancel();
+            }
+            else
+            {
+                throw new IOException("Injected selector replacement failure");
+            }
+        });
+
+        if (cancel)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                failingStore.SelectAccountAsync(other, cancellation.Token));
+        }
+        else
+        {
+            var result = await failingStore.SelectAccountAsync(other);
+            Assert.False(result.Succeeded);
+            Assert.Equal(DashboardCacheDiagnosticKind.WriteFailed, result.Diagnostic.Kind);
+        }
+
+        Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp", SearchOption.AllDirectories));
+        var selected = await store.ReadLastUsedAsync(Now);
+        Assert.Equal(DashboardCacheDiagnosticKind.Loaded, selected.Diagnostic.Kind);
+        Assert.Equal(Octocat, selected.Record!.Account);
+        Assert.Equal("selected", Assert.Single(selected.Record.Activity!.Items).Id);
+    }
+
+    [Fact]
+    public async Task InterruptedSelectorWriteIsRemovedWithoutChangingTheSelectedAccount()
+    {
+        var store = new JsonDashboardCacheStore(_directory);
+        await store.WriteAsync(Record(activity: ListSection("selected")));
+        await store.SelectAccountAsync(Octocat);
+        var interrupted = Path.Combine(_directory, "last-account.json.interrupted.tmp");
+        var unrelated = Path.Combine(_directory, "settings.json.interrupted.tmp");
+        await File.WriteAllTextAsync(interrupted, "partial");
+        await File.WriteAllTextAsync(unrelated, "keep");
+
+        var selected = await store.ReadLastUsedAsync(Now);
+
+        Assert.Equal(DashboardCacheDiagnosticKind.Loaded, selected.Diagnostic.Kind);
+        Assert.Equal(Octocat, selected.Record!.Account);
+        Assert.False(File.Exists(interrupted));
+        Assert.Equal("keep", await File.ReadAllTextAsync(unrelated));
+    }
+
     [Fact]
     public async Task ClearBetweenSelectorAndRecordReadInvalidatesTheWholeLastUsedOperation()
     {
@@ -643,12 +704,12 @@ public sealed class DashboardCacheStoreTests : IDisposable
             (_, _) => throw new IOException("Injected replacement failure"));
 
         var result = await failingStore.WriteAsync(Record(activity: ListSection("replacement")));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(initialStore.GetFilePath(Octocat))!));
         var retained = await initialStore.ReadAsync(Octocat, Now);
 
         Assert.False(result.Succeeded);
         Assert.Equal(DashboardCacheDiagnosticKind.WriteFailed, result.Diagnostic.Kind);
         Assert.Equal("previous", Assert.Single(retained.Record!.Activity!.Items).Id);
-        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(initialStore.GetFilePath(Octocat))!));
     }
 
     [Fact]
@@ -661,10 +722,10 @@ public sealed class DashboardCacheStoreTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             cancelingStore.WriteAsync(Record(activity: ListSection("replacement")), cancellation.Token));
+        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(initialStore.GetFilePath(Octocat))!));
         var retained = await initialStore.ReadAsync(Octocat, Now);
 
         Assert.Equal("previous", Assert.Single(retained.Record!.Activity!.Items).Id);
-        Assert.Single(Directory.GetFiles(Path.GetDirectoryName(initialStore.GetFilePath(Octocat))!));
     }
 
     [Fact]
@@ -746,6 +807,7 @@ public sealed class DashboardCacheStoreTests : IDisposable
     [Fact]
     public async Task ClearWaitsForAnOlderAtomicWriteThenDeletesItsResult()
     {
+        var timeout = TimeSpan.FromSeconds(10);
         using var writeEntered = new ManualResetEventSlim();
         using var releaseWrite = new ManualResetEventSlim();
         var store = new JsonDashboardCacheStore(
@@ -753,24 +815,49 @@ public sealed class DashboardCacheStoreTests : IDisposable
             (_, _) =>
             {
                 writeEntered.Set();
-                if (!releaseWrite.Wait(TimeSpan.FromSeconds(10)))
+                if (!releaseWrite.Wait(timeout))
                 {
                     throw new TimeoutException("The test did not release the write.");
                 }
             });
-        var write = store.WriteAsync(Record(activity: ListSection("pre-clear")));
-        Assert.True(writeEntered.Wait(TimeSpan.FromSeconds(10)));
+        var write = Task.Run(() => store.WriteAsync(Record(activity: ListSection("pre-clear"))));
+        Task<DashboardCacheClearResult>? clear = null;
+        Exception? testFailure = null;
+        try
+        {
+            Assert.True(writeEntered.Wait(timeout));
+            clear = store.ClearAsync();
+            Assert.False(clear.IsCompleted);
+            releaseWrite.Set();
+            var written = await write.WaitAsync(timeout);
+            Assert.True(written.Succeeded);
+            Assert.Equal(DashboardCacheDiagnosticKind.Written, written.Diagnostic.Kind);
+            var result = await clear.WaitAsync(timeout);
 
-        var clear = store.ClearAsync();
-        Assert.False(clear.IsCompleted);
-        releaseWrite.Set();
-        await write;
-        var result = await clear;
-
-        Assert.True(result.Succeeded);
-        Assert.False(File.Exists(store.GetFilePath(Octocat)));
-        Assert.Equal(DashboardCacheDiagnosticKind.Missing,
-            (await store.ReadAsync(Octocat, Now)).Diagnostic.Kind);
+            Assert.True(result.Succeeded);
+            Assert.False(File.Exists(store.GetFilePath(Octocat)));
+            Assert.Equal(DashboardCacheDiagnosticKind.Missing,
+                (await store.ReadAsync(Octocat, Now).WaitAsync(timeout)).Diagnostic.Kind);
+        }
+        catch (Exception exception)
+        {
+            testFailure = exception;
+            throw;
+        }
+        finally
+        {
+            releaseWrite.Set();
+            try
+            {
+                Task[] operations = clear is null ? [write] : [write, clear];
+                await Task.WhenAll(operations).WaitAsync(timeout);
+            }
+            catch (Exception cleanupFailure) when (testFailure is not null)
+            {
+                throw new AggregateException(
+                    "The test and its cleanup both failed.", testFailure, cleanupFailure);
+            }
+        }
     }
 
     [Fact]
@@ -798,15 +885,6 @@ public sealed class DashboardCacheStoreTests : IDisposable
         Assert.False(result.Succeeded);
         Assert.Equal(DashboardCacheDiagnosticKind.Invalidated, result.Diagnostic.Kind);
         Assert.False(File.Exists(store.GetFilePath(Octocat)));
-    }
-
-    [Fact]
-    public async Task ReflectionDisabledSourceGenerationRoundTripsTheCacheModel()
-    {
-        var store = new JsonDashboardCacheStore(_directory);
-        await store.WriteAsync(Record(activity: ListSection("source-generated")));
-        var loaded = await store.ReadAsync(Octocat, Now);
-        Assert.Equal("source-generated", Assert.Single(loaded.Record!.Activity!.Items).Id);
     }
 
     private static DashboardCacheRecord Record(

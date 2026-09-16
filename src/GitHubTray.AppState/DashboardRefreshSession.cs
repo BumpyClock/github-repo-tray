@@ -302,14 +302,12 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             DashboardSnapshot? snapshot = null;
             string? error = null;
             Exception? unexpectedFault = null;
-            GitHubUser? confirmedDifferentAccount = null;
-            var completingInitialHydration = hydrateFromCache;
-            var completingInitialVerification = hydrateFromCache;
+            var confirmedDifferentAccount = false;
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var request = new DashboardRefreshRequest(reason, refreshInterval);
-                result = hydrateFromCache && reason is DashboardRefreshReason.Startup
+                result = hydrateFromCache
                     ? await _service.RefreshWithHydrationAsync(
                         request,
                         previous,
@@ -318,24 +316,12 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                             user, cached, generation, completion),
                         (user, message) =>
                         {
-                            confirmedDifferentAccount = user;
+                            confirmedDifferentAccount = user is not null;
                             PublishAccountMismatch(user, message, generation, completion);
                         },
-                        ResolveStartupRefreshIntervalAsync,
-                        cancellationToken).ConfigureAwait(false)
-                    : hydrateFromCache
-                    ? await _service.RefreshWithHydrationAsync(
-                        request,
-                        previous,
-                        hydrated => PublishHydrated(hydrated, generation, completion),
-                        (user, cached) => PublishVerifiedAccount(
-                            user, cached, generation, completion),
-                        (user, message) =>
-                        {
-                            confirmedDifferentAccount = user;
-                            PublishAccountMismatch(user, message, generation, completion);
-                        },
-                        null,
+                        reason is DashboardRefreshReason.Startup
+                            ? ResolveStartupRefreshIntervalAsync
+                            : null,
                         cancellationToken).ConfigureAwait(false)
                     : await _service.RefreshAsync(
                         request,
@@ -344,7 +330,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                             user, cached, generation, completion),
                         (user, message) =>
                         {
-                            confirmedDifferentAccount = user;
+                            confirmedDifferentAccount = user is not null;
                             PublishAccountMismatch(user, message, generation, completion);
                         },
                         cancellationToken).ConfigureAwait(false);
@@ -369,13 +355,10 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             }
             finally
             {
-                hydrateFromCache = false;
-                if (completingInitialHydration)
+                if (hydrateFromCache)
                 {
+                    hydrateFromCache = false;
                     _initialHydration.TrySetResult();
-                }
-                if (completingInitialVerification)
-                {
                     _initialVerification.TrySetResult();
                 }
             }
@@ -406,36 +389,17 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                         refreshInterval = _refreshInterval;
                         _activeReason = reason;
                         _manualFollowUpRequested = false;
-                        _state = snapshot is not null
-                            ? new(
-                                snapshot,
-                                snapshot.User.Login,
-                                null,
-                                true,
-                                false,
-                                snapshot.User,
-                                DashboardAccountVerificationStatus.Verified)
-                            : FailedState(
-                                error,
-                                isRefreshing: true,
-                                confirmedDifferentAccount is not null);
                     }
-                    else
-                    {
-                        _state = snapshot is not null
-                            ? new(
-                                snapshot,
-                                snapshot.User.Login,
-                                null,
-                                false,
-                                false,
-                                snapshot.User,
-                                DashboardAccountVerificationStatus.Verified)
-                            : FailedState(
-                                error,
-                                isRefreshing: false,
-                                confirmedDifferentAccount is not null);
-                    }
+                    _state = snapshot is not null
+                        ? new(
+                            snapshot,
+                            snapshot.User.Login,
+                            null,
+                            runManualFollowUp,
+                            false,
+                            snapshot.User,
+                            DashboardAccountVerificationStatus.Verified)
+                        : FailedState(error, runManualFollowUp, confirmedDifferentAccount);
                     stateChanged = true;
                 }
 

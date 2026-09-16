@@ -198,6 +198,10 @@ public sealed partial class DashboardViewModel : ObservableObject
     public partial ContributionSection Contributions { get; private set; } = new(null, null, null);
 
     [ObservableProperty]
+    public partial CopilotUsageViewModel CopilotDisplay { get; private set; } =
+        CopilotUsageViewModel.Create(null, displayable: false, refreshing: true);
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
     [NotifyPropertyChangedFor(nameof(EmptyTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyMessage))]
@@ -212,11 +216,6 @@ public sealed partial class DashboardViewModel : ObservableObject
     public partial bool IsRefreshing { get; private set; } = true;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsEmptyVisible))]
-    [NotifyPropertyChangedFor(nameof(EmptyTitle))]
-    [NotifyPropertyChangedFor(nameof(EmptyMessage))]
-    [NotifyPropertyChangedFor(nameof(VisibleContributionCalendar))]
-    [NotifyPropertyChangedFor(nameof(ContributionStatus))]
     [NotifyPropertyChangedFor(nameof(AccountDisplayName))]
     public partial bool IsAccountVerified { get; private set; }
 
@@ -588,12 +587,17 @@ public sealed partial class DashboardViewModel : ObservableObject
                 : error
             : "";
         IsRefreshing = state.IsRefreshing;
+        UpdateCopilotDisplay(state);
+        NotifyEmptyState();
+    }
+
+    private void UpdateCopilotDisplay(DashboardSessionState state)
+    {
         CopilotDisplay = CopilotUsageViewModel.Create(
             state.Snapshot?.Copilot,
             state.HasDisplayableData,
             state.IsRefreshing,
             accountVerified: state.IsAccountVerified);
-        NotifyEmptyState();
     }
 
     private void ReleasePresentation()
@@ -818,12 +822,7 @@ public sealed partial class DashboardViewModel : ObservableObject
                 row.UpdateRelativeTimestamp();
             }
         }
-        var state = _refreshSession.State;
-        CopilotDisplay = CopilotUsageViewModel.Create(
-            state.Snapshot?.Copilot,
-            state.HasDisplayableData,
-            state.IsRefreshing,
-            accountVerified: state.IsAccountVerified);
+        UpdateCopilotDisplay(_refreshSession.State);
     }
 
     public Task ShutdownAsync() => _shutdownTask ??= ShutdownCoreAsync();

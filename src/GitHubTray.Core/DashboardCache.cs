@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace GitHubTray.Core;
 
@@ -166,7 +167,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 return InvalidatedRead();
             }
 
-            await DeleteInterruptedSelectorWritesAsync().ConfigureAwait(false);
+            DeleteInterruptedWrites(GetSelectorFilePath());
             var selector = await ReadSelectorAsync(cancellationToken).ConfigureAwait(false);
             if (selector.Diagnostic is { } selectorDiagnostic)
             {
@@ -187,10 +188,6 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                         .ConfigureAwait(false);
                 }
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
@@ -247,7 +244,6 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         long operationGeneration,
         CancellationToken cancellationToken)
     {
-        ValidateAccount(account);
         var filePath = GetFilePath(account);
         var inactiveCandidates = GetInactivePruneCandidates(filePath, cancellationToken);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -262,10 +258,6 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 .ConfigureAwait(false);
             return await ReadOwnedRecordAsync(filePath, account, now, cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
@@ -297,7 +289,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             {
                 try
                 {
-                    await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                    DeleteOwnedFile(filePath);
                     return new(new(DashboardCacheDiagnosticKind.Pruned,
                         "Dashboard cache contained no reusable sections and was removed."));
                 }
@@ -348,9 +340,35 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             $"{account.UserId}.json");
     }
 
-    private async Task<DashboardCacheWriteResult> ReplaceAsync(
+    private Task<DashboardCacheWriteResult> ReplaceAsync(
         string filePath,
         DashboardCacheRecord record,
+        CancellationToken cancellationToken) =>
+        ReplaceAsync(
+            filePath,
+            record,
+            DashboardCacheJsonContext.Default.DashboardCacheRecord,
+            "Dashboard cache was replaced atomically for the verified account.",
+            "Dashboard cache could not be written; live data remains available.",
+            cancellationToken);
+
+    private Task<DashboardCacheWriteResult> ReplaceSelectorAsync(
+        DashboardCacheAccount account,
+        CancellationToken cancellationToken) =>
+        ReplaceAsync(
+            GetSelectorFilePath(),
+            new DashboardCacheSelector(DashboardCacheVersions.Selector, account),
+            DashboardCacheJsonContext.Default.DashboardCacheSelector,
+            "The last-used dashboard account was saved without credentials.",
+            "The dashboard was refreshed, but its last-used account selector could not be saved.",
+            cancellationToken);
+
+    private async Task<DashboardCacheWriteResult> ReplaceAsync<T>(
+        string filePath,
+        T value,
+        JsonTypeInfo<T> typeInfo,
+        string successMessage,
+        string failureMessage,
         CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(filePath)!;
@@ -362,8 +380,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                 FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 await JsonSerializer.SerializeAsync(
-                    stream, record, DashboardCacheJsonContext.Default.DashboardCacheRecord, cancellationToken)
-                    .ConfigureAwait(false);
+                    stream, value, typeInfo, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -371,17 +388,11 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             _beforeReplace?.Invoke(temporaryPath, filePath);
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryPath, filePath, overwrite: true);
-            return new(new(DashboardCacheDiagnosticKind.Written,
-                "Dashboard cache was replaced atomically for the verified account."));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
+            return new(new(DashboardCacheDiagnosticKind.Written, successMessage));
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
-            return new(new(DashboardCacheDiagnosticKind.WriteFailed,
-                "Dashboard cache could not be written; live data remains available."));
+            return new(new(DashboardCacheDiagnosticKind.WriteFailed, failureMessage));
         }
         finally
         {
@@ -394,59 +405,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             }
             catch (Exception exception) when (IsIoFailure(exception))
             {
-                // The account record remains authoritative; a future read removes interrupted writes.
-            }
-        }
-    }
-
-    private async Task<DashboardCacheWriteResult> ReplaceSelectorAsync(
-        DashboardCacheAccount account,
-        CancellationToken cancellationToken)
-    {
-        var filePath = GetSelectorFilePath();
-        var temporaryPath = filePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            Directory.CreateDirectory(_rootDirectory);
-            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
-                FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
-                await JsonSerializer.SerializeAsync(
-                    stream,
-                    new DashboardCacheSelector(DashboardCacheVersions.Selector, account),
-                    DashboardCacheJsonContext.Default.DashboardCacheSelector,
-                    cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            _beforeReplace?.Invoke(temporaryPath, filePath);
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporaryPath, filePath, overwrite: true);
-            return new(new(DashboardCacheDiagnosticKind.Written,
-                "The last-used dashboard account was saved without credentials."));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception) when (IsIoFailure(exception))
-        {
-            return new(new(DashboardCacheDiagnosticKind.WriteFailed,
-                "The dashboard was refreshed, but its last-used account selector could not be saved."));
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-            }
-            catch (Exception exception) when (IsIoFailure(exception))
-            {
-                // A future selector read removes interrupted writes.
+                // The destination remains authoritative; a future read removes interrupted writes.
             }
         }
     }
@@ -651,9 +610,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
         }
-        catch (Exception exception) when (
-            exception is FileNotFoundException or DirectoryNotFoundException ||
-            IsIoFailure(exception))
+        catch (Exception exception) when (IsIoFailure(exception))
         {
             return;
         }
@@ -663,7 +620,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             if (stream.Length > MaximumFileSize)
             {
                 await stream.DisposeAsync().ConfigureAwait(false);
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return;
             }
 
@@ -676,13 +633,13 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
             if (record.SchemaVersion != DashboardCacheVersions.Schema)
             {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return;
             }
             ValidateAccount(record.Account);
             if (!string.Equals(GetFilePath(record.Account), filePath, StringComparison.OrdinalIgnoreCase))
             {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return;
             }
 
@@ -704,21 +661,17 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
             if (!HasAnySection(retained))
             {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
             }
             else if (pruned)
             {
                 _ = await ReplaceAsync(filePath, retained, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (
             exception is JsonException or ArgumentException or InvalidOperationException)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
         }
         catch (Exception exception) when (IsIoFailure(exception))
         {
@@ -732,18 +685,14 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        await DeleteInterruptedWritesAsync(filePath).ConfigureAwait(false);
+        DeleteInterruptedWrites(filePath);
         FileStream stream;
         try
         {
             stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
         }
-        catch (FileNotFoundException)
-        {
-            return Missing();
-        }
-        catch (DirectoryNotFoundException)
+        catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
         {
             return Missing();
         }
@@ -758,7 +707,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             if (stream.Length > MaximumFileSize)
             {
                 await stream.DisposeAsync().ConfigureAwait(false);
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return Malformed();
             }
 
@@ -769,13 +718,9 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
                     .ConfigureAwait(false) ?? throw new JsonException("Cache must contain an object.");
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (exception is JsonException or NotSupportedException)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return Malformed();
         }
         catch (Exception exception) when (IsIoFailure(exception))
@@ -785,7 +730,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
         if (record.SchemaVersion != DashboardCacheVersions.Schema)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return new(null, new(DashboardCacheDiagnosticKind.Incompatible,
                 "Dashboard cache used an incompatible schema or account partition and was ignored."));
         }
@@ -796,7 +741,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
         catch (ArgumentException)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return Malformed();
         }
 
@@ -804,7 +749,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         if ((expectedAccount is not null && !AccountsMatch(expectedAccount, record.Account)) ||
             !string.Equals(GetFilePath(record.Account), filePath, StringComparison.OrdinalIgnoreCase))
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return new(null, new(DashboardCacheDiagnosticKind.Incompatible,
                 "Dashboard cache used an incompatible schema or account partition and was ignored."));
         }
@@ -829,7 +774,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         catch (Exception exception) when (
             exception is JsonException or ArgumentException or InvalidOperationException)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return Malformed();
         }
 
@@ -846,7 +791,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
         if (!HasAnySection(retained))
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return new(null, new(DashboardCacheDiagnosticKind.Pruned,
                 "Dashboard cache contained no reusable sections and was pruned."));
         }
@@ -880,11 +825,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
         }
-        catch (FileNotFoundException)
-        {
-            return new(null, null);
-        }
-        catch (DirectoryNotFoundException)
+        catch (IOException exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
         {
             return new(null, null);
         }
@@ -900,7 +841,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             if (stream.Length > MaximumFileSize)
             {
                 await stream.DisposeAsync().ConfigureAwait(false);
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return new(null, new(
                     DashboardCacheDiagnosticKind.Malformed,
                     "The malformed last-used dashboard account selector was ignored and removed."));
@@ -918,7 +859,7 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
 
             if (selector.SchemaVersion != DashboardCacheVersions.Selector)
             {
-                await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+                DeleteOwnedFile(filePath);
                 return new(null, new(
                     DashboardCacheDiagnosticKind.Incompatible,
                     "The last-used dashboard account selector used an incompatible schema and was removed."));
@@ -926,14 +867,10 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             ValidateAccount(selector.Account);
             return new(selector.Account, null);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (
             exception is JsonException or ArgumentException or NotSupportedException)
         {
-            await DeleteOwnedFileAsync(filePath).ConfigureAwait(false);
+            DeleteOwnedFile(filePath);
             return new(null, new(
                 DashboardCacheDiagnosticKind.Malformed,
                 "The malformed last-used dashboard account selector was ignored and removed."));
@@ -1238,12 +1175,12 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
         }
     }
 
-    private static Task DeleteInterruptedWritesAsync(string filePath)
+    private static void DeleteInterruptedWrites(string filePath)
     {
         var directory = Path.GetDirectoryName(filePath)!;
         if (!Directory.Exists(directory))
         {
-            return Task.CompletedTask;
+            return;
         }
 
         foreach (var temporaryPath in Directory.EnumerateFiles(
@@ -1255,42 +1192,19 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
             }
             catch (Exception exception) when (IsIoFailure(exception))
             {
-                // The valid account record, if present, remains readable.
+                // The valid destination, if present, remains readable.
             }
         }
-        return Task.CompletedTask;
-    }
-
-    private Task DeleteInterruptedSelectorWritesAsync()
-    {
-        if (!Directory.Exists(_rootDirectory))
-        {
-            return Task.CompletedTask;
-        }
-        foreach (var temporaryPath in Directory.EnumerateFiles(
-            _rootDirectory, SelectorFileName + ".*.tmp", SearchOption.TopDirectoryOnly))
-        {
-            try
-            {
-                File.Delete(temporaryPath);
-            }
-            catch (Exception exception) when (IsIoFailure(exception))
-            {
-                // The valid selector, if present, remains readable.
-            }
-        }
-        return Task.CompletedTask;
     }
 
     private string GetSelectorFilePath() => Path.Combine(_rootDirectory, SelectorFileName);
 
-    private static Task DeleteOwnedFileAsync(string filePath)
+    private static void DeleteOwnedFile(string filePath)
     {
         if (File.Exists(filePath))
         {
             File.Delete(filePath);
         }
-        return Task.CompletedTask;
     }
 }
 

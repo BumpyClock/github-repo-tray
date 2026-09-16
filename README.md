@@ -423,7 +423,9 @@ powershell.exe -NoProfile -Mta -File .\scripts\Test-ContributionViewport.ps1 -Ap
 
 Pass `-SettingsPath <app-local-settings.json>` to also check persisted cell size
 without changing the refresh interval. The script restores the initial size and
-returns to the dashboard.
+returns to the dashboard. Geometry checks exclude clipped edge cells and allow
+one device pixel of UI Automation bounding-box rounding. Inspect the captured
+preset screenshots for exact rendered square edges.
 
 ## Port plan
 

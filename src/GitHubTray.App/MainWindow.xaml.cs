@@ -25,7 +25,6 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueueTimer _dismissTimer;
     private readonly PanelPerformanceLog? _performanceLog;
     private TrayIcon? _trayIcon;
-    private bool _hasAcrylicBackdrop;
     private bool _isQuitting;
     private bool _isActivated;
 
@@ -33,7 +32,6 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         ViewModel = new DashboardViewModel(startup, DispatcherQueue);
-        ViewModel.SetPanelVisible(false);
         var presenter = AppWindow.Presenter.As<OverlappedPresenter>();
         presenter.SetBorderAndTitleBar(false, false);
         presenter.IsResizable = false;
@@ -93,21 +91,19 @@ public sealed partial class MainWindow : Window
             if (DesktopAcrylicController.IsSupported())
             {
                 SystemBackdrop = new DesktopAcrylicBackdrop();
-                _hasAcrylicBackdrop = true;
             }
         }
         catch (Exception exception) when (exception is COMException or NotSupportedException)
         {
             Debug.WriteLine($"Acrylic initialization failed ({exception.HResult:X8}); using the opaque theme surface.");
             SystemBackdrop = null;
-            _hasAcrylicBackdrop = false;
         }
 
         // DesktopAcrylicBackdrop owns system transparency and high-contrast changes.
         // AccessibilitySettings.HighContrastChanged requires a UWP window and fails in WinUI 3.
-        FallbackSurface.Visibility = _hasAcrylicBackdrop
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        FallbackSurface.Visibility = SystemBackdrop is null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private MainPage EnsurePanelContent()
@@ -122,7 +118,6 @@ public sealed partial class MainWindow : Window
             ViewModel.SetPanelVisible(true);
             _page = new MainPage(ViewModel, this);
             PageHost.Child = _page;
-            _page.SetPanelVisible(true);
             ConfigureBackdrop();
             return _page;
         }
@@ -150,7 +145,6 @@ public sealed partial class MainWindow : Window
             finally
             {
                 SystemBackdrop = null;
-                _hasAcrylicBackdrop = false;
                 FallbackSurface.Visibility = Visibility.Visible;
             }
         }

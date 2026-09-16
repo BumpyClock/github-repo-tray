@@ -16,10 +16,13 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
     [InlineData("HTTP 404")]
     public async Task CopilotPermissionFailuresDoNotStartAnotherAuthenticationFlow(string diagnostic)
     {
-        var api = CreateOutputApi(SensitiveDiagnostic, $"{diagnostic}\n{SensitiveDiagnostic}", 1);
+        var starts = 0;
+        var api = CreateOutputApi(
+            SensitiveDiagnostic, $"{diagnostic}\n{SensitiveDiagnostic}", 1, () => starts++);
         var error = await Assert.ThrowsAsync<GitHubException>(() => api.GetAsync(CopilotUsageParser.Endpoint));
         Assert.Contains("Copilot usage is not accessible to the current gh account", error.Message);
         Assert.DoesNotContain(SensitiveDiagnostic, error.ToString());
+        Assert.Equal(1, starts);
     }
 
     [Theory]
@@ -394,8 +397,10 @@ public sealed class GitHubCliApiTests(GitHubProcessFixture fixture) : IClassFixt
         }
     }
 
-    private GitHubCliApi CreateOutputApi(string stdout, string stderr, int exitCode = 0) => new(() =>
+    private GitHubCliApi CreateOutputApi(
+        string stdout, string stderr, int exitCode = 0, Action? onStart = null) => new(() =>
     {
+        onStart?.Invoke();
         var info = fixture.CreateStartInfo("output");
         info.Environment["GITHUB_TRAY_FIXTURE_STDOUT"] = stdout;
         info.Environment["GITHUB_TRAY_FIXTURE_STDERR"] = stderr;

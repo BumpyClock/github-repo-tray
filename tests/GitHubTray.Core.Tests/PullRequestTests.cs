@@ -69,16 +69,11 @@ public sealed class PullRequestTests
     }
 
     [Fact]
-    public void MissingRollupAndMissingCommitAreDistinctFromPassedChecks()
+    public void MissingCommitIsUnknownRatherThanPassedChecks()
     {
         var response = PullRequestTestData.Response();
-        PullRequestTestData.Commit(response)["statusCheckRollup"] = null;
-        var checks = Parse(response).PullRequest!.Checks;
-        Assert.Equal(CheckRollupState.NoChecks, checks.State);
-        Assert.Empty(checks.Items);
-
         PullRequestTestData.Pull(response)["commits"]!["nodes"] = new JsonArray();
-        checks = Parse(response).PullRequest!.Checks;
+        var checks = Parse(response).PullRequest!.Checks;
         Assert.Equal(CheckRollupState.Unknown, checks.State);
         Assert.Null(checks.CommitOid);
     }

@@ -476,6 +476,7 @@ internal static class SessionAssertions
         Assert.Equal(revision, Assert.Single(snapshot.Activity.Items).Id);
         Assert.Equal($"{login}/{revision}", Assert.Single(snapshot.Activity.Items).Repository);
         Assert.Equal($"#42 Improve {revision}", Assert.Single(snapshot.PullRequests.Items).Title);
+        Assert.Equal($"#42 Improve {revision}", Assert.Single(snapshot.ReviewRequests.Items).Title);
         Assert.Equal("Review requested", Assert.Single(snapshot.ReviewRequests.Items).Detail);
         Assert.Equal($"{login}/{revision}", Assert.Single(snapshot.Repositories.Items).Title);
         foreach (var section in Sections(snapshot))

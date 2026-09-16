@@ -16,6 +16,7 @@ public sealed class DashboardRefreshSessionCopilotTests
         {
             await fixture.RefreshAsync();
             previous = fixture.Session.State.Snapshot;
+            fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         }
         var responses = RefreshResponses.Success(revision: "new");
         responses.Copilot = responses.Copilot with { Failure = new GitHubException("Usage denied") };
@@ -47,6 +48,7 @@ public sealed class DashboardRefreshSessionCopilotTests
         await using var fixture = new RefreshSessionFixture();
         await fixture.RefreshAsync();
         var original = fixture.Session.State.Snapshot!.Copilot;
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var responses = RefreshResponses.Success();
         responses.Copilot = new(body);
         fixture.Api.Use(responses);

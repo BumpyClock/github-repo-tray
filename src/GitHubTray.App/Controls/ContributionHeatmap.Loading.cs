@@ -21,10 +21,10 @@ public sealed partial class ContributionHeatmap
     private readonly List<Border> _skeletonCells = [];
     private Storyboard? _shimmer;
     private int _shimmerFirstVisibleWeek;
-    private bool _panelVisible = true;
+    // A hidden page is retired, never made visible again.
+    private bool _released;
     private bool _plotInvalidated = true;
     private bool _motionSettingsSubscribed;
-    private bool _released;
 
     public bool IsLoading
     {
@@ -41,7 +41,7 @@ public sealed partial class ContributionHeatmap
     private static void OnLoadingChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var control = (ContributionHeatmap)sender;
-        if (control.CalendarGrid is null)
+        if (control._released || control.CalendarGrid is null)
         {
             return;
         }
@@ -58,7 +58,7 @@ public sealed partial class ContributionHeatmap
     private static void OnActiveChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var control = (ContributionHeatmap)sender;
-        if (control.CalendarGrid is not null)
+        if (!control._released && control.CalendarGrid is not null)
         {
             // Preferences collapse the graph. Its scroll extent must be settled
             // again on activation even if it returns to the same dimensions.
@@ -72,30 +72,15 @@ public sealed partial class ContributionHeatmap
         }
     }
 
-    public void SetPanelVisible(bool visible)
-    {
-        if (_released) return;
-        _panelVisible = visible;
-        if (!visible)
-        {
-            ReleasePlotVisuals();
-        }
-        else
-        {
-            EnsurePlotCurrent();
-        }
-    }
-
     internal void ReleaseForHide()
     {
         if (_released) return;
         _released = true;
-        _panelVisible = false;
         DetachMotionSettings();
         CloseSelectionTooltip();
         if (_keyboardTooltip is not null)
         {
-            _keyboardTooltip.XamlRoot = null;
+            ToolTipService.SetToolTip(SelectionOutline, null);
             _keyboardTooltip = null;
         }
         ReleasePlotVisuals();
@@ -151,9 +136,9 @@ public sealed partial class ContributionHeatmap
         if (!_released) DispatcherQueue.TryEnqueue(UpdateShimmer);
     }
 
-    // DashboardViewModel publishes the latest hidden snapshot immediately before this
-    // control is made visible. Setters mark the plot dirty until that reveal callback.
-    private bool CanRealizePlot => !_released && IsLoaded && _panelVisible && IsActive;
+    // The page is created from the latest session state on reveal. Setters mark the
+    // plot dirty until Loaded, or until Preferences stops collapsing the graph.
+    private bool CanRealizePlot => !_released && IsLoaded && IsActive;
 
     private bool TryRebuildPlot()
     {
@@ -196,7 +181,6 @@ public sealed partial class ContributionHeatmap
         }
 
         CloseSelectionTooltip();
-        _pendingAnchor ??= CaptureViewport();
         StopShimmer();
         _skeletonCells.Clear();
         CalendarGrid.Children.Clear();
@@ -264,7 +248,7 @@ public sealed partial class ContributionHeatmap
 
     private void UpdateShimmer()
     {
-        if (_released || !IsLoaded || !_panelVisible || !IsActive || !IsLoading || ViewModel.HasDays
+        if (!CanRealizePlot || !IsLoading || ViewModel.HasDays
             || _skeletonCells.Count == 0 || !_uiSettings.AnimationsEnabled || _accessibilitySettings.HighContrast)
         {
             StopShimmer();

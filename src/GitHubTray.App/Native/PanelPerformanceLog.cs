@@ -105,7 +105,13 @@ internal sealed class PanelPerformanceLog : IDisposable
         WriteSample("hidden", Stopwatch.GetTimestamp(), cancelledRender);
     }
 
-    private void CompositionTarget_Rendering(object? sender, object args)
+    private void CompositionTarget_Rendering(object? sender, object args) =>
+        CompletePendingRender("first-render-callback");
+
+    private void RenderTimeout_Tick(DispatcherQueueTimer sender, object args) =>
+        CompletePendingRender("render-timeout");
+
+    private void CompletePendingRender(string eventName)
     {
         if (!_waitingForRender || _isDisposed)
         {
@@ -114,19 +120,7 @@ internal sealed class PanelPerformanceLog : IDisposable
 
         var timestamp = Stopwatch.GetTimestamp();
         CancelPendingRender();
-        WriteSample("first-render-callback", timestamp);
-    }
-
-    private void RenderTimeout_Tick(DispatcherQueueTimer sender, object args)
-    {
-        if (!_waitingForRender || _isDisposed)
-        {
-            return;
-        }
-
-        var timestamp = Stopwatch.GetTimestamp();
-        CancelPendingRender();
-        WriteSample("render-timeout", timestamp);
+        WriteSample(eventName, timestamp);
     }
 
     private void CancelPendingRender()

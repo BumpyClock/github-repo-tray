@@ -62,6 +62,7 @@ public sealed class DashboardRefreshSessionFreshnessTests
         var snapshot = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
         Assert.Equal("periodic-two", Assert.Single(snapshot.Activity.Items).Id);
         Assert.Equal("#42 Improve periodic-two", Assert.Single(snapshot.PullRequests.Items).Title);
+        Assert.Equal("#42 Improve periodic-two", Assert.Single(snapshot.ReviewRequests.Items).Title);
         Assert.Equal("Review requested", Assert.Single(snapshot.ReviewRequests.Items).Detail);
         Assert.Equal("octocat/first", Assert.Single(snapshot.Repositories.Items).Title);
         Assert.Equal(5, fixture.Api.Requests.Length - before);

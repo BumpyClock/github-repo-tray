@@ -10,13 +10,6 @@ public static class DashboardSnapshotPresentation
         bool isVerified = true)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var showingCache =
-            snapshot.Activity.Source == DashboardSectionSource.Cached ||
-            snapshot.PullRequests.Source == DashboardSectionSource.Cached ||
-            snapshot.ReviewRequests.Source == DashboardSectionSource.Cached ||
-            snapshot.Repositories.Source == DashboardSectionSource.Cached ||
-            snapshot.Contributions.Source == DashboardSectionSource.Cached ||
-            snapshot.Copilot.Source == DashboardSectionSource.Cached;
         if (!isVerified)
         {
             return isRefreshing
@@ -24,6 +17,13 @@ public static class DashboardSnapshotPresentation
                 : $"Saved github.com account: @{snapshot.User.Login}. Showing data saved on this device with its original timestamps; this account is not verified for the current process.";
         }
 
+        var showingCache =
+            snapshot.Activity.Source == DashboardSectionSource.Cached ||
+            snapshot.PullRequests.Source == DashboardSectionSource.Cached ||
+            snapshot.ReviewRequests.Source == DashboardSectionSource.Cached ||
+            snapshot.Repositories.Source == DashboardSectionSource.Cached ||
+            snapshot.Contributions.Source == DashboardSectionSource.Cached ||
+            snapshot.Copilot.Source == DashboardSectionSource.Cached;
         if (showingCache)
         {
             return isRefreshing

@@ -167,9 +167,7 @@ public sealed partial class PullRequestCard : UserControl
             return;
         }
 
-        _avatarImage.ImageFailed -= AvatarImageFailed;
-        _avatarImage = null;
-        AuthorPicture.ProfilePicture = null; // PersonPicture keeps its initials.
+        ClearAvatar(); // PersonPicture keeps its initials.
     }
 
     private void UpdateStateAppearance() =>

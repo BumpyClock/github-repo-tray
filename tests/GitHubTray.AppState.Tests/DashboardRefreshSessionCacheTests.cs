@@ -11,6 +11,7 @@ public sealed class DashboardRefreshSessionCacheTests
         var seed = await SeedAsync(cache);
         var writesBeforeStartup = cache.WriteCount;
         await using var fixture = new RefreshSessionFixture(cache);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var responses = RefreshResponses.Success(revision: "must-not-load");
         var finalIdentity = fixture.Gate();
         responses.FinalUser = responses.FinalUser with { Gate = finalIdentity };
@@ -153,6 +154,7 @@ public sealed class DashboardRefreshSessionCacheTests
         _ = await SeedAsync(cache, "octocat", "last-used-cache");
         var readsBeforeStartup = cache.ReadCount;
         await using var fixture = new RefreshSessionFixture(cache);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var responses = RefreshResponses.Success("different-account", "must-not-load");
         var finalIdentity = fixture.Gate();
         responses.FinalUser = responses.FinalUser with { Gate = finalIdentity };

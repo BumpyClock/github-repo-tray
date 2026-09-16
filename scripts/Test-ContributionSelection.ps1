@@ -60,6 +60,12 @@ function Invoke-WinApp {
     }
 }
 
+function Send-GraphKeys {
+    param([string]$Keys)
+    Invoke-WinApp -Arguments @('ui', 'send-keys', $Keys, '--target', 'ContributionGraph',
+        '-a', "$AppPid", '--via', 'send-input')
+}
+
 function Find-Element {
     param([System.Windows.Automation.AutomationElement]$Root, [string]$AutomationId)
     $condition = [System.Windows.Automation.PropertyCondition]::new(
@@ -147,33 +153,32 @@ function Test-Selection {
 }
 
 try {
-    Invoke-WinApp -Arguments @('ui', 'send-keys', 'home', '--target', 'ContributionGraph',
-        '-a', "$AppPid", '--via', 'send-input')
+    Send-GraphKeys 'home'
     Start-Sleep -Milliseconds 400
     Test-Selection 'Home boundary is silent' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'home', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'home'
     } 0 $false
     Test-Selection 'Down selects the next day and announces once' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'down', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'down'
     } 1 $true
     Test-Selection 'Right moves one calendar week' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'right', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'right'
     } 8 $true
     Test-Selection 'Up selects the previous day' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'up', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'up'
     } 7 $true
     Test-Selection 'Left moves one calendar week' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'left', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'left'
     } 0 $true
     Invoke-WinApp -Arguments @('ui', 'screenshot', 'ContributionGraph', '-a', "$AppPid",
         '-o', (Join-Path $OutputDirectory 'selection-first.png'))
     Test-Selection 'End selects the latest day' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'end', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'end'
     } ($days.Count - 1) $true
     Test-Selection 'End boundary is silent' {
-        Invoke-WinApp -Arguments @('ui', 'send-keys', 'down right end', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+        Send-GraphKeys 'down right end'
     } ($days.Count - 1) $false
-    Invoke-WinApp -Arguments @('ui', 'send-keys', 'home', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+    Send-GraphKeys 'home'
     Start-Sleep -Milliseconds 400
     Test-Selection 'Pointer selects a day and retains heatmap focus' {
         Invoke-WinApp -Arguments @('ui', 'click', $days[10].Current.AutomationId, '-a', "$AppPid")
@@ -183,7 +188,7 @@ try {
     } 10 $false
     Invoke-WinApp -Arguments @('ui', 'screenshot', 'ContributionGraph', '-a', "$AppPid",
         '-o', (Join-Path $OutputDirectory 'selection-pointer.png'))
-    Invoke-WinApp -Arguments @('ui', 'send-keys', 'tab', '--target', 'ContributionGraph', '-a', "$AppPid", '--via', 'send-input')
+    Send-GraphKeys 'tab'
     $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
     $focusPassed = $focused.Current.ProcessId -eq $AppPid -and
         $focused.Current.AutomationId -ne 'ContributionGraph' -and

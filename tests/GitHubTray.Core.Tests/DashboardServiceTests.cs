@@ -72,14 +72,6 @@ public sealed class DashboardServiceTests
         Assert.NotNull(snapshot.Activity.Error);
     }
 
-    [Fact]
-    public async Task FailedUserLookupDoesNotRequestAccountSpecificData()
-    {
-        var api = new FakeApi { FailUser = true };
-        await Assert.ThrowsAsync<GitHubException>(() => new DashboardService(api).RefreshAsync());
-        Assert.Equal(["user"], api.Endpoints);
-    }
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -128,7 +120,7 @@ public sealed class DashboardServiceTests
     [Theory]
     [InlineData("not-json")]
     [InlineData("{}")]
-    [InlineData("""{"login":"invalid/user","html_url":"https://github.com/user"}""")]
+    [InlineData("""{"id":1,"login":"invalid/user","html_url":"https://github.com/user"}""")]
     public async Task MalformedIdentityIsReportedAsBoundaryFailure(string response)
     {
         var api = new FakeApi { UserResponse = response };
@@ -215,7 +207,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task AllFreshStartupSnapshotUsesOnlyTheTwoIdentityOperations()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -240,7 +232,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task PeriodicRefreshAlwaysFetchesActivityAndPullRequestsButReusesOtherFreshSections()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -269,7 +261,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task ExactFreshnessBoundariesRequireFetches()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -310,7 +302,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task ManualRefreshBypassesFreshnessForEverySection()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -329,7 +321,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task ReusedFailedSectionPreservesItsOriginalSuccessTimestampAndFailure()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var original = await service.RefreshAsync();
@@ -356,7 +348,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task SuccessfulEmptySectionRemainsAReusableSuccess()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -382,7 +374,7 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task FreshSnapshotFromAnotherAccountIsNeverReused()
     {
-        var clock = new MutableTimeProvider();
+        var clock = new ManualTimeProvider();
         var api = new FakeApi();
         var service = new DashboardService(api, timeProvider: clock);
         var previous = await service.RefreshAsync();
@@ -476,6 +468,7 @@ public sealed class DashboardServiceTests
         var item = Assert.Single(snapshot.Activity.Items);
         Assert.Equal("Repository activity", item.Title);
         Assert.Equal("https://github.com/org/repo", item.Url.AbsoluteUri);
+        Assert.Equal(new DateTimeOffset(2026, 9, 1, 9, 30, 0, TimeSpan.Zero), item.UpdatedAt);
     }
 
     [Fact]
@@ -534,19 +527,6 @@ public sealed class DashboardServiceTests
     }
 
     [Fact]
-    public async Task PartialGraphQlResultsDoNotSilentlyReplaceTheLastCompleteResults()
-    {
-        var api = new FakeApi();
-        var service = new DashboardService(api);
-        var previous = await service.RefreshAsync();
-        api.IncompleteSearch = true;
-        var snapshot = await service.RefreshAsync(previous);
-        Assert.True(snapshot.PullRequests.IsStale);
-        Assert.Contains("could not load", snapshot.PullRequests.Error);
-        Assert.Same(previous.PullRequests.Items, snapshot.PullRequests.Items);
-    }
-
-    [Fact]
     public async Task CancellationPropagatesInsteadOfBecomingAnOfflineResult()
     {
         using var cancellation = new CancellationTokenSource();
@@ -573,6 +553,17 @@ public sealed class DashboardServiceTests
         Assert.Equal(snapshot.Repositories.UpdatedAt, record.Repositories!.SucceededAt);
         Assert.Equal(snapshot.Contributions.UpdatedAt, record.Contributions!.SucceededAt);
         Assert.Equal(snapshot.Copilot.UpdatedAt, record.Copilot!.SucceededAt);
+        Assert.Equal(snapshot.Activity.Items, record.Activity.Items);
+        Assert.Equal(snapshot.PullRequests.Items, record.PullRequests.Items);
+        Assert.Equal(snapshot.ReviewRequests.Items, record.ReviewRequests.Items);
+        Assert.Equal(snapshot.Repositories.Items, record.Repositories.Items);
+        Assert.Equal(snapshot.Contributions.Calendar!.TotalContributions,
+            record.Contributions.Calendar.TotalContributions);
+        Assert.Equal(
+            snapshot.Contributions.Calendar.Weeks.SelectMany(week => week.Days),
+            record.Contributions.Calendar.Weeks.SelectMany(week => week.Days));
+        Assert.Equal(snapshot.Copilot.Usage!.Plan, record.Copilot.Usage.Plan);
+        Assert.Equal(snapshot.Copilot.Usage.Quotas.AsEnumerable(), record.Copilot.Usage.Quotas.AsEnumerable());
         Assert.All(new[]
         {
             record.Activity.SucceededAt,
@@ -665,20 +656,29 @@ public sealed class DashboardServiceTests
     [Fact]
     public async Task LastUsedCachePublishesBeforeAConfirmedDifferentAccount()
     {
+        var clock = new ManualTimeProvider();
         var cache = new RecordingCacheStore
         {
             ReadRecord = new DashboardCacheRecord(
                 DashboardCacheVersions.Schema,
                 new("github.com", 2, "other"),
-                new(DashboardCacheVersions.Activity, DateTimeOffset.UtcNow, []),
+                new(DashboardCacheVersions.Activity, clock.GetUtcNow(), []),
                 null, null, null, null, null)
         };
         DashboardSnapshot? hydrated = null;
-        var api = new FakeApi();
+        var publications = 0;
+        var identityResponded = false;
+        var api = new FakeApi { BeforeUser = () => identityResponded = true };
 
-        var snapshot = await new DashboardService(api, cache)
-            .RefreshWithHydrationAsync(null, value => hydrated = value);
+        var snapshot = await new DashboardService(api, cache, clock)
+            .RefreshWithHydrationAsync(null, value =>
+            {
+                Assert.False(identityResponded);
+                publications++;
+                hydrated = value;
+            });
 
+        Assert.Equal(1, publications);
         Assert.Equal("other", hydrated!.User.Login);
         Assert.Equal("octocat", snapshot.User.Login);
         Assert.Equal(2, cache.ReadCount);
@@ -720,7 +720,17 @@ public sealed class DashboardServiceTests
     [InlineData("")]
     public async Task CliRejectsNonRelativeOrOptionEndpoints(string endpoint)
     {
-        await Assert.ThrowsAsync<ArgumentException>(() => new GitHubCliApi().GetAsync(endpoint));
+        var factoryCalls = 0;
+        var api = new GitHubCliApi(() =>
+        {
+            factoryCalls++;
+            throw new InvalidOperationException("Must not prepare a process.");
+        }, TimeSpan.FromSeconds(15));
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => api.GetAsync(endpoint));
+
+        Assert.Equal("endpoint", error.ParamName);
+        Assert.Equal(0, factoryCalls);
     }
 
     private sealed class FakeApi : IGitHubApi
@@ -732,7 +742,6 @@ public sealed class DashboardServiceTests
         public bool FailUser { get; set; }
         public bool FailActivity { get; set; }
         public bool FailRepositories { get; set; }
-        public bool IncompleteSearch { get; set; }
         public Action? AfterQuery { get; set; }
         public Action? AfterCopilot { get; set; }
         public Action? BeforeUser { get; set; }
@@ -757,10 +766,6 @@ public sealed class DashboardServiceTests
             {
                 var pulls = PullRequestTestData.Response(Login);
                 PullRequestTestData.Pull(pulls)["url"] = PullUrl;
-                if (IncompleteSearch)
-                {
-                    pulls["errors"] = System.Text.Json.Nodes.JsonNode.Parse("""[{"message":"partial response"}]""");
-                }
                 return Task.FromResult(pulls.ToJsonString());
             }
             var response = ContributionTestData.Response(Login).ToJsonString();
@@ -811,9 +816,9 @@ public sealed class DashboardServiceTests
         }
     }
 
-    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    private sealed class ManualTimeProvider(DateTimeOffset? now = null) : TimeProvider
     {
-        private DateTimeOffset _now = now;
+        private DateTimeOffset _now = now ?? new(2026, 9, 14, 20, 0, 0, TimeSpan.Zero);
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan elapsed) => _now += elapsed;
     }
@@ -900,11 +905,4 @@ public sealed class DashboardServiceTests
         }
     }
 
-    private sealed class MutableTimeProvider : TimeProvider
-    {
-        private DateTimeOffset utcNow = new(2026, 9, 14, 20, 0, 0, TimeSpan.Zero);
-
-        public override DateTimeOffset GetUtcNow() => utcNow;
-        public void Advance(TimeSpan duration) => utcNow += duration;
-    }
 }

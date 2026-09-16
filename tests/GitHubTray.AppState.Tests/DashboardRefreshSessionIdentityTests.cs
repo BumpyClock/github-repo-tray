@@ -65,6 +65,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
         var verified = fixture.Session.State;
         var previous = SessionAssertions.Success(verified);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var outage = RefreshResponses.Success();
         outage.InitialUser = outage.InitialUser with { Failure = new GitHubException("Identity unavailable") };
         fixture.Api.Use(outage);
@@ -186,6 +187,7 @@ public sealed class DashboardRefreshSessionIdentityTests
         await fixture.RefreshAsync();
         var originalState = fixture.Session.State;
         var original = SessionAssertions.Success(originalState);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var gate = fixture.Gate();
         var responses = RefreshResponses.Success(revision: "must-not-publish");
         responses.Contributions = RefreshResponses.Calendar("octocat", allZero: true);

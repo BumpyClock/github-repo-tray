@@ -48,7 +48,6 @@ public sealed partial class ContributionHeatmap : UserControl
         set => SetValue(StatusProperty, value);
     }
 
-    public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public static Visibility FeedbackVisibility(bool loading, bool hasDays, bool hasError) =>
         !loading && (!hasDays || hasError) ? Visibility.Visible : Visibility.Collapsed;
 

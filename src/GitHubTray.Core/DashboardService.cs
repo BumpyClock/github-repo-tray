@@ -56,7 +56,7 @@ public sealed class DashboardService
         DashboardRefreshRequest request,
         DashboardSnapshot? previous = null,
         CancellationToken cancellationToken = default) =>
-        RefreshCoreAsync(request, previous, false, null, null, null, null, cancellationToken);
+        RefreshCoreAsync(request, previous, null, null, null, null, cancellationToken);
 
     public Task<DashboardRefreshResult> RefreshAsync(
         DashboardRefreshRequest request,
@@ -71,7 +71,6 @@ public sealed class DashboardService
         return RefreshCoreAsync(
             request,
             previous,
-            false,
             null,
             publishVerifiedAccount,
             publishAccountMismatch,
@@ -79,11 +78,22 @@ public sealed class DashboardService
             cancellationToken);
     }
 
-    public Task<DashboardSnapshot> RefreshWithHydrationAsync(
+    public async Task<DashboardSnapshot> RefreshWithHydrationAsync(
         DashboardSnapshot? previous,
         Action<DashboardSnapshot?> publishHydrated,
-        CancellationToken cancellationToken = default) =>
-        RefreshHydratedSnapshotAsync(previous, publishHydrated, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(publishHydrated);
+        var result = await RefreshCoreAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
+            previous,
+            publishHydrated,
+            null,
+            null,
+            null,
+            cancellationToken).ConfigureAwait(false);
+        return result.Snapshot;
+    }
 
     public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
         DashboardRefreshRequest request,
@@ -94,7 +104,7 @@ public sealed class DashboardService
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(publishHydrated);
         return RefreshCoreAsync(
-            request, previous, true, publishHydrated, null, null, null, cancellationToken);
+            request, previous, publishHydrated, null, null, null, cancellationToken);
     }
 
     public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
@@ -110,7 +120,6 @@ public sealed class DashboardService
         return RefreshCoreAsync(
             request,
             previous,
-            true,
             publishHydrated,
             null,
             null,
@@ -134,7 +143,6 @@ public sealed class DashboardService
         return RefreshCoreAsync(
             request,
             previous,
-            true,
             publishHydrated,
             publishVerifiedAccount,
             publishAccountMismatch,
@@ -148,32 +156,13 @@ public sealed class DashboardService
         CancellationToken cancellationToken)
     {
         var result = await RefreshCoreAsync(
-            request, previous, false, null, null, null, null, cancellationToken).ConfigureAwait(false);
-        return result.Snapshot;
-    }
-
-    private async Task<DashboardSnapshot> RefreshHydratedSnapshotAsync(
-        DashboardSnapshot? previous,
-        Action<DashboardSnapshot?> publishHydrated,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(publishHydrated);
-        var result = await RefreshCoreAsync(
-            new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
-            previous,
-            true,
-            publishHydrated,
-            null,
-            null,
-            null,
-            cancellationToken).ConfigureAwait(false);
+            request, previous, null, null, null, null, cancellationToken).ConfigureAwait(false);
         return result.Snapshot;
     }
 
     private async Task<DashboardRefreshResult> RefreshCoreAsync(
         DashboardRefreshRequest request,
         DashboardSnapshot? previous,
-        bool hydrateFromCache,
         Action<DashboardSnapshot?>? publishHydrated,
         Action<GitHubUser, DashboardSnapshot?>? publishVerifiedAccount,
         Action<GitHubUser?, string>? publishAccountMismatch,
@@ -184,7 +173,7 @@ public sealed class DashboardService
         request.Validate();
         var now = _timeProvider.GetUtcNow();
 
-        if (hydrateFromCache)
+        if (publishHydrated is not null)
         {
             DashboardSnapshot? hydrated = null;
             if (_cacheStore is not null)
@@ -203,7 +192,7 @@ public sealed class DashboardService
             {
                 previous = RetainEligible(previous, _timeProvider.GetUtcNow());
             }
-            publishHydrated!(HasSuccessfulSection(previous) ? previous : null);
+            publishHydrated(HasSuccessfulSection(previous) ? previous : null);
         }
 
         var user = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
@@ -215,7 +204,7 @@ public sealed class DashboardService
             previous = null;
         }
 
-        if (hydrateFromCache && previous is null && _cacheStore is not null)
+        if (publishHydrated is not null && previous is null && _cacheStore is not null)
         {
             var cached = await _cacheStore.ReadAsync(
                 Account(user), _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
@@ -239,7 +228,7 @@ public sealed class DashboardService
             Report(selected.Diagnostic);
         }
 
-        if (hydrateFromCache &&
+        if (publishHydrated is not null &&
             request.Reason is DashboardRefreshReason.Startup &&
             resolveStartupRefreshInterval is not null)
         {
@@ -414,22 +403,14 @@ public sealed class DashboardService
         }
         catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
         {
-            return new(previous?.Usage, previous?.UpdatedAt, exception.Message)
-            {
-                Source = previous?.UpdatedAt is not null
-                    ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
-            };
+            return Failed(previous, exception.Message);
         }
         catch (Exception exception) when (exception is JsonException or FormatException or
                                          InvalidOperationException or KeyNotFoundException or
                                          OverflowException or ArgumentOutOfRangeException)
         {
-            return new(previous?.Usage, previous?.UpdatedAt,
-                "GitHub returned an unexpected Copilot usage response. Refresh again or update GitHub Tray if this persists.")
-            {
-                Source = previous?.UpdatedAt is not null
-                    ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
-            };
+            return Failed(previous,
+                "GitHub returned an unexpected Copilot usage response. Refresh again or update GitHub Tray if this persists.");
         }
     }
 
@@ -586,6 +567,13 @@ public sealed class DashboardService
                 ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
         };
 
+    private static CopilotUsageSection Failed(CopilotUsageSection? previous, string error) =>
+        new(previous?.Usage, previous?.UpdatedAt, error)
+        {
+            Source = previous?.UpdatedAt is not null
+                ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
+        };
+
     private static DashboardSnapshot RetainEligible(DashboardSnapshot snapshot, DateTimeOffset now) =>
         snapshot with
         {
@@ -622,11 +610,7 @@ public sealed class DashboardService
         {
             return hydrated;
         }
-        if (hydrated is null)
-        {
-            return inMemory;
-        }
-        if (!AccountsMatch(inMemory.User, hydrated.User))
+        if (hydrated is null || !AccountsMatch(inMemory.User, hydrated.User))
         {
             return inMemory;
         }

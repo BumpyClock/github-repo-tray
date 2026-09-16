@@ -33,6 +33,7 @@ public sealed class DashboardRefreshSessionFailureTests
             await fixture.RefreshAsync();
 
             SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            Assert.Same(previous.Snapshot, fixture.Session.State.Snapshot);
             Assert.Equal("An unexpected refresh error occurred. Check GitHub CLI and try again.",
                 fixture.Session.State.Error);
             var expectedRequests = 8 + RequestsThrough(phase);

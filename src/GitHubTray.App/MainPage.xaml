@@ -154,7 +154,7 @@
             </StackPanel>
             <SelectorBar x:Name="ModeSelector" Grid.Row="1" Margin="0,12,0,0" SelectionChanged="ModeSelector_SelectionChanged"
                          AutomationProperties.AutomationId="DashboardModes" AutomationProperties.Name="Dashboard section">
-                <SelectorBarItem Text="Activity" IsSelected="True" Tag="0"
+                <SelectorBarItem Text="Activity" Tag="0"
                                  AutomationProperties.AutomationId="ActivityTab" AutomationProperties.Name="Recent GitHub activity" />
                 <SelectorBarItem Text="My PRs" Tag="1"
                                  AutomationProperties.AutomationId="PullRequestsTab" AutomationProperties.Name="My authored pull requests" />

@@ -57,7 +57,7 @@ public sealed class CopilotUsageViewModelTests
         var display = CopilotUsageViewModel.Create(Section(), false, refreshing);
         Assert.Empty(display.Quotas);
         Assert.Empty(display.Plan);
-        Assert.True(display.HasStatus);
+        Assert.Equal(!refreshing, display.HasStatus);
     }
 
     [Fact]
@@ -91,13 +91,12 @@ public sealed class CopilotUsageViewModelTests
     }
 
     [Fact]
-    public void CachedUsageHasExplicitProvenanceWhileLiveRefreshContinues()
+    public void CachedUsageKeepsQuotaRowsWithoutRefreshStatusNoise()
     {
         var cached = Section() with { Source = DashboardSectionSource.Cached };
         var display = CopilotUsageViewModel.Create(cached, true, true);
         Assert.Single(display.Quotas);
-        Assert.Contains("Cached from", display.Status);
-        Assert.Contains("Refreshing", display.Status);
+        Assert.False(display.HasStatus);
         Assert.False(display.HasError);
     }
 
