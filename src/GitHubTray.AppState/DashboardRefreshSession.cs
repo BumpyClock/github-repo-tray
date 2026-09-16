@@ -453,15 +453,10 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
 
     private async Task<TimeSpan> ResolveStartupRefreshIntervalAsync(CancellationToken cancellationToken)
     {
-        TimeSpan refreshInterval;
         if (_startupRefreshInterval is not null)
         {
-            refreshInterval = await _startupRefreshInterval.WaitAsync(cancellationToken).ConfigureAwait(false);
-            ValidateRefreshInterval(refreshInterval);
-            lock (_gate)
-            {
-                _refreshInterval = refreshInterval;
-            }
+            var refreshInterval = await _startupRefreshInterval.WaitAsync(cancellationToken).ConfigureAwait(false);
+            SetRefreshInterval(refreshInterval);
             return refreshInterval;
         }
 

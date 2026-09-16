@@ -21,7 +21,7 @@ public sealed class PullRequestHistoryPresentationTests
         Assert.Equal(label, vm.StateLabel);
         Assert.Equal(state, vm.State);
         Assert.Equal(state == PullRequestState.Open && draft, vm.IsDraft);
-        Assert.NotEmpty(vm.StateGlyph);
+        Assert.NotEmpty(vm.StatusGlyph);
         Assert.Contains($"Current state: {label}.", vm.AccessibleName);
         Assert.True(vm.CanOpenChecks); // Closed/merged cards remain navigable.
         Assert.Equal("No checks", vm.ChecksSummary); // State does not manufacture CI success.
@@ -52,7 +52,6 @@ public sealed class PullRequestHistoryPresentationTests
         }, false, EventTime.AddMinutes(9));
 
         Assert.True(vm.HasActivity);
-        Assert.Equal(count, vm.ActivityEventCount);
         Assert.Equal(expected, vm.ActivitySummary);
         Assert.Equal("Merged", vm.StateLabel); // Commenting after merge does not reopen a PR.
         Assert.Equal("#42 · @alex · 9m ago", vm.Metadata);
@@ -86,7 +85,6 @@ public sealed class PullRequestHistoryPresentationTests
         var vm = Present(PullRequestState.Merged);
 
         Assert.False(vm.HasActivity);
-        Assert.Equal(0, vm.ActivityEventCount);
         Assert.Empty(vm.ActivitySummary);
         Assert.Empty(vm.ActivityToolTip);
         Assert.Contains("Updated", vm.MetadataToolTip);

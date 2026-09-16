@@ -42,7 +42,9 @@ public sealed class PullRequestPresentationTests
         Assert.Equal(summary, vm.ChecksSummary);
         Assert.Equal(tone, vm.ChecksTone);
         Assert.Equal(word, Assert.Single(vm.Checks).State);
-        Assert.NotEmpty(vm.Checks[0].Glyph);
+        var group = Assert.Single(vm.CheckGroups);
+        Assert.NotEmpty(group.Glyph);
+        Assert.Equal(tone, group.Tone);
         Assert.Contains(word, vm.Checks[0].AccessibleName);
     }
 
@@ -54,7 +56,6 @@ public sealed class PullRequestPresentationTests
         // Named outcomes, never a vague "mixed" verdict and never "passed".
         Assert.Equal("1 neutral · 1 skipped · 1 passed", vm.ChecksSummary);
         Assert.Equal(StatusTone.Neutral, vm.ChecksTone);
-        Assert.Equal("1 neutral · 1 skipped · 1 passed", vm.CheckStateCounts);
         Assert.Equal("3 checks", vm.CheckCountLabel);
         Assert.False(vm.IsChecksTruncated);
     }
@@ -84,7 +85,8 @@ public sealed class PullRequestPresentationTests
         Assert.Equal(tone, vm.ChecksTone);
         Assert.True(vm.IsChecksTruncated);
         Assert.Equal("Showing 100 of 142 checks", vm.CheckCountLabel);
-        Assert.Contains("not exact progress", vm.ChecksExplanation);
+        Assert.Contains("GitHub returned 100 of 142 checks.", vm.ChecksCaveat);
+        Assert.Contains("Results that are missing do not mean those checks passed.", vm.ChecksCaveat);
         Assert.DoesNotContain("100/142", vm.ChecksSummary);
         Assert.DoesNotContain("passed", vm.ChecksSummary);
     }
@@ -184,24 +186,24 @@ public sealed class PullRequestPresentationTests
     }
 
     [Theory]
-    [InlineData(null, "", StatusTone.Neutral)]
-    [InlineData("APPROVED", "Approved", StatusTone.Success)]
-    [InlineData("CHANGES_REQUESTED", "Changes requested", StatusTone.Failure)]
-    [InlineData("REVIEW_REQUIRED", "Review required", StatusTone.Progress)]
-    public void DraftAndReviewDecisionAreIndependent(string? decision, string text, StatusTone tone)
+    [InlineData(null, "")]
+    [InlineData("APPROVED", "Approved")]
+    [InlineData("CHANGES_REQUESTED", "Changes requested")]
+    [InlineData("REVIEW_REQUIRED", "Review required")]
+    public void DraftBadgePreservesReviewDecisionForAccessibility(string? decision, string text)
     {
         var details = Details(Checks(CheckRollupState.NoChecks)) with { IsDraft = true, ReviewDecision = decision };
         var vm = new PullRequestCardViewModel(Item(details), false, UpdatedAt);
 
         Assert.True(vm.IsDraft);
         Assert.Equal(text, vm.ReviewDecisionText);
-        Assert.Equal(tone, vm.ReviewDecisionTone);
         Assert.Equal(decision is not null, vm.HasReviewDecision);
-        // PR state and review decision drive independent visual states.
-        Assert.Equal("Draft", vm.StateLabel);
-        Assert.Equal($"Review{tone}", vm.ReviewVisualState);
+        Assert.Equal("Draft", vm.StatusLabel);
+        Assert.Equal("StatusDraft", vm.StatusVisualState);
         if (decision is null)
             Assert.DoesNotContain("review required", vm.AccessibleName, StringComparison.OrdinalIgnoreCase);
+        else
+            Assert.Contains(text, vm.AccessibleName);
     }
 
     [Theory]
@@ -253,12 +255,12 @@ public sealed class PullRequestPresentationTests
     [Fact]
     public void CardFooterExistsOnlyForComments()
     {
-        // The review chip left the footer, so an approved PR with no comments has no footer row.
+        // Review status alone does not need a comments footer.
         var quiet = Details(Checks(CheckRollupState.NoChecks)) with { ReviewDecision = "APPROVED", CommentCount = 0 };
-        Assert.False(new PullRequestCardViewModel(Item(quiet), false, UpdatedAt).HasCardFooter);
+        Assert.False(new PullRequestCardViewModel(Item(quiet), false, UpdatedAt).HasComments);
 
         var talkative = quiet with { CommentCount = 3 };
-        Assert.True(new PullRequestCardViewModel(Item(talkative), false, UpdatedAt).HasCardFooter);
+        Assert.True(new PullRequestCardViewModel(Item(talkative), false, UpdatedAt).HasComments);
     }
 
     [Fact]
@@ -333,7 +335,7 @@ public sealed class PullRequestPresentationTests
         var vm = Present(new CommitChecks(null, CheckRollupState.Unknown, [new(" ", CheckState.Unknown)], 1));
 
         Assert.Equal("Unnamed check: Unknown", Assert.Single(vm.Checks).AccessibleName);
-        Assert.Equal(StatusTone.Caution, vm.Checks[0].Tone);
+        Assert.Equal(StatusTone.Caution, Assert.Single(vm.CheckGroups).Tone);
     }
 
     private static PullRequestCardViewModel Present(CommitChecks checks, bool isStale = false) =>

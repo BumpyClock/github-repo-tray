@@ -64,13 +64,13 @@ public sealed class PullRequestCardViewModel : ObservableObject
         IsDraft = State == PullRequestState.Open && details.IsDraft;
         Branches = $"{details.HeadRefName} → {details.BaseRefName}";
         ReviewDecision = details.ReviewDecision;
-        (ReviewDecisionText, ReviewDecisionGlyph, ReviewDecisionTone) = details.ReviewDecision switch
+        ReviewDecisionText = details.ReviewDecision switch
         {
-            "APPROVED" => ("Approved", "\uE73E", StatusTone.Success),
-            "CHANGES_REQUESTED" => ("Changes requested", "\uE7BA", StatusTone.Failure),
-            "REVIEW_REQUIRED" => ("Review required", "\uE8F2", StatusTone.Progress),
-            null or "" => ("", "\uE8F2", StatusTone.Neutral),
-            _ => ("Review status unknown", "\uE8F2", StatusTone.Neutral)
+            "APPROVED" => "Approved",
+            "CHANGES_REQUESTED" => "Changes requested",
+            "REVIEW_REQUIRED" => "Review required",
+            null or "" => "",
+            _ => "Review status unknown"
         };
         CommentCount = details.CommentCount;
         CommentSummary = $"{details.CommentCount} {(details.CommentCount == 1 ? "comment" : "comments")}";
@@ -96,15 +96,11 @@ public sealed class PullRequestCardViewModel : ObservableObject
         CheckCountLabel = IsChecksTruncated
             ? $"Showing {items.Length} of {checks.TotalCount} checks"
             : $"{items.Length} {(items.Length == 1 ? "check" : "checks")}";
-        CheckStateCounts = FormatStateCounts(items);
-        var (summary, glyph, tone) = SummarizeChecks(checks.State, items, IsChecksTruncated, CheckStateCounts);
+        var (summary, glyph, tone) = SummarizeChecks(checks.State, items, IsChecksTruncated);
         ChecksSummary = IsStale ? $"Stale · {summary}" : summary;
         ChecksGlyph = IsStale ? "\uE7BA" : glyph;
         // Stale results describe an older commit, so they never present as settled.
         ChecksTone = IsStale ? StatusTone.Caution : tone;
-        ChecksExplanation = IsChecksTruncated
-            ? $"{AggregateDescription(checks.State)} Individual outcomes below cover only the loaded checks, not exact progress."
-            : AggregateDescription(checks.State);
         CheckSegments = BuildSegments(items, checks.TotalCount);
         (ChecksVerdict, ChecksDenominator) =
             SummarizeVerdict(checks.State, items, checks.TotalCount, IsChecksTruncated, IsStale);
@@ -135,12 +131,6 @@ public sealed class PullRequestCardViewModel : ObservableObject
         PullRequestState.Merged => "Merged",
         PullRequestState.Closed => "Closed",
         _ => IsDraft ? "Draft" : "Open"
-    };
-    public string StateGlyph => State switch
-    {
-        PullRequestState.Merged => "\uE73E", // CheckMark
-        PullRequestState.Closed => "\uE711", // Cancel
-        _ => IsDraft ? "\uE70F" : "\uEA3A" // Edit / CircleRing
     };
     public string StateDescription => $"{(IsStale ? "Last known state" : "Current state")}: {StateLabel}."
         + (IsStale ? " Section refresh failed." : "");
@@ -196,14 +186,9 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public string Branches { get; }
     public string? ReviewDecision { get; }
     public string ReviewDecisionText { get; }
-    public string ReviewDecisionGlyph { get; }
-    public StatusTone ReviewDecisionTone { get; }
-    public string ReviewVisualState => $"Review{ReviewDecisionTone}";
     public bool HasReviewDecision => ReviewDecisionText.Length != 0;
     public int CommentCount { get; }
     public bool HasComments => CommentCount > 0;
-    /// <summary>The closing status row only exists when it has something to say.</summary>
-    public bool HasCardFooter => HasComments;
     public string CommentCountText => CommentCount.ToString(CultureInfo.CurrentCulture);
     public string CommentSummary { get; }
     public IReadOnlyList<PullRequestLabelChip> LabelChips { get; }
@@ -225,7 +210,6 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public string ChecksVerdict { get; }
     /// <summary>What the verdict is measured against; carries the truncation count when there is one.</summary>
     public string ChecksDenominator { get; }
-    public bool HasChecksDenominator => ChecksDenominator.Length != 0;
     /// <summary>Everything the bar cannot show honestly, stated once instead of woven into the summary.</summary>
     public string ChecksCaveat { get; }
     public bool HasChecksCaveat => ChecksCaveat.Length != 0;
@@ -233,8 +217,6 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public bool HasCheckSegments => CheckSegments.Count > 0;
     public string ChecksGlyph { get; }
     public StatusTone ChecksTone { get; }
-    public string CheckStateCounts { get; }
-    public string ChecksExplanation { get; }
     public string EmptyChecksMessage { get; }
     public string HeadCommitLabel { get; }
     public string HeadCommitToolTip { get; }
@@ -251,7 +233,6 @@ public sealed class PullRequestCardViewModel : ObservableObject
     public string Timestamp => Item.UpdatedAt.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
     public string Metadata => $"#{Number} · @{AuthorLogin} · {RelativeTimestamp}";
     public bool HasActivity => Item.PullRequestActivity is not null;
-    public int ActivityEventCount => Item.PullRequestActivity?.EventCount ?? 0;
     public string ActivitySummary
     {
         get
@@ -301,7 +282,7 @@ public sealed class PullRequestCardViewModel : ObservableObject
     }
 
     private static (string Text, string Glyph, StatusTone Tone) SummarizeChecks(
-        CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks, bool isTruncated, string counts)
+        CheckRollupState aggregate, ImmutableArray<PullRequestCheck> checks, bool isTruncated)
     {
         // GraphQL's aggregate covers checks we have not loaded. Never infer progress
         // or all-passed from the first page, even when every loaded check passed.
@@ -326,6 +307,7 @@ public sealed class PullRequestCardViewModel : ObservableObject
         // that only the aggregate carries is named in front of them instead of replacing them.
         var unshown = UnshownAggregate(aggregate, checks);
         var tone = ToneForChecks(aggregate, checks);
+        var counts = FormatStateCounts(checks);
         return (unshown is null ? counts : $"{unshown} · {counts}",
             unshown is null ? ToneGlyph(tone) : AggregateGlyph(aggregate),
             tone);
@@ -585,8 +567,6 @@ public sealed class PullRequestCheckViewModel(PullRequestCheck check)
 {
     public string Name { get; } = string.IsNullOrWhiteSpace(check.Name) ? "Unnamed check" : check.Name;
     public string State { get; } = StateText(check.State);
-    public string Glyph { get; } = StateGlyph(check.State);
-    public StatusTone Tone { get; } = ToneFor(check.State);
     internal CheckState RawState { get; } = check.State;
     public string AccessibleName => $"{Name}: {State}";
 

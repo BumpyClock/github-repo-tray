@@ -27,13 +27,20 @@ public sealed class DashboardService
         _reportCacheDiagnostic = reportCacheDiagnostic;
     }
 
-    public Task<DashboardSnapshot> RefreshAsync(
+    public async Task<DashboardSnapshot> RefreshAsync(
         DashboardSnapshot? previous = null,
-        CancellationToken cancellationToken = default) =>
-        RefreshSnapshotAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RefreshCoreAsync(
             new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
             previous,
-            cancellationToken);
+            null,
+            null,
+            null,
+            null,
+            cancellationToken).ConfigureAwait(false);
+        return result.Snapshot;
+    }
 
     public async Task<DashboardCacheClearResult> ClearCacheAsync(
         CancellationToken cancellationToken = default)
@@ -111,26 +118,6 @@ public sealed class DashboardService
         DashboardRefreshRequest request,
         DashboardSnapshot? previous,
         Action<DashboardSnapshot?> publishHydrated,
-        Func<CancellationToken, Task<TimeSpan>> resolveStartupRefreshInterval,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(publishHydrated);
-        ArgumentNullException.ThrowIfNull(resolveStartupRefreshInterval);
-        return RefreshCoreAsync(
-            request,
-            previous,
-            publishHydrated,
-            null,
-            null,
-            resolveStartupRefreshInterval,
-            cancellationToken);
-    }
-
-    public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
-        DashboardRefreshRequest request,
-        DashboardSnapshot? previous,
-        Action<DashboardSnapshot?> publishHydrated,
         Action<GitHubUser, DashboardSnapshot?> publishVerifiedAccount,
         Action<GitHubUser?, string> publishAccountMismatch,
         Func<CancellationToken, Task<TimeSpan>>? resolveStartupRefreshInterval,
@@ -148,16 +135,6 @@ public sealed class DashboardService
             publishAccountMismatch,
             resolveStartupRefreshInterval,
             cancellationToken);
-    }
-
-    private async Task<DashboardSnapshot> RefreshSnapshotAsync(
-        DashboardRefreshRequest request,
-        DashboardSnapshot? previous,
-        CancellationToken cancellationToken)
-    {
-        var result = await RefreshCoreAsync(
-            request, previous, null, null, null, null, cancellationToken).ConfigureAwait(false);
-        return result.Snapshot;
     }
 
     private async Task<DashboardRefreshResult> RefreshCoreAsync(
@@ -262,9 +239,7 @@ public sealed class DashboardService
         Task<DashboardSection> repositories = CanReuse(
             request, DashboardSectionKind.Repositories, previous?.Repositories.UpdatedAt, now)
             ? Reuse(previous!.Repositories, DashboardSectionKind.Repositories, ref reusedSections)
-            : LoadSectionAsync(
-                $"user/repos?sort=pushed&direction=desc&per_page={ItemLimit}&affiliation=owner,collaborator,organization_member",
-                ParseRepositories, previous?.Repositories, cancellationToken);
+            : LoadRepositoriesAsync(previous?.Repositories, cancellationToken);
         Task<ContributionSection> contributions =
             previous?.Contributions.Calendar is not null &&
             CanReuse(request, DashboardSectionKind.Contributions,
@@ -497,15 +472,15 @@ public sealed class DashboardService
         }
     }
 
-    private async Task<DashboardSection> LoadSectionAsync(
-        string endpoint,
-        Func<JsonElement, IReadOnlyList<DashboardItem>> parse,
+    private async Task<DashboardSection> LoadRepositoriesAsync(
         DashboardSection? previous,
         CancellationToken cancellationToken)
     {
         try
         {
-            var items = await ReadAsync(endpoint, parse, cancellationToken).ConfigureAwait(false);
+            var items = await ReadAsync(
+                $"user/repos?sort=pushed&direction=desc&per_page={ItemLimit}&affiliation=owner,collaborator,organization_member",
+                ParseRepositories, cancellationToken).ConfigureAwait(false);
             return new DashboardSection(items, _timeProvider.GetUtcNow(), null)
             {
                 Source = DashboardSectionSource.Live

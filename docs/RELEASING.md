@@ -1,10 +1,10 @@
-# Building a release bundle
+# Release guide
 
-The current output is an unsigned, full-trust MSIX bundle with NativeAOT binaries
-for x64, x86, and ARM64. The product identity and publisher in
-`src\GitHubTray.App\Package.appxmanifest` are still development placeholders.
-No Store submission, certificate trust, installation, or automatic update flow is
-part of the build.
+`scripts\Build-MsixBundle.ps1` produces an unsigned, full-trust MSIX bundle with
+NativeAOT binaries for x64, x86, and ARM64. The identity and publisher in
+`src\GitHubTray.App\Package.appxmanifest` are development placeholders. The build
+does not submit to the Store, create or trust certificates, install the app, or
+configure automatic updates.
 
 ## Prerequisites
 
@@ -15,32 +15,32 @@ part of the build.
   in the generated package manifest. NativeAOT removes the .NET runtime
   dependency, not the Windows App Runtime dependency.
 
-## Checklist
+## Release checklist
 
-1. Review the package identity, publisher, and four-part version in
-   `Package.appxmanifest`. Increase the version for an update and use the same
-   identity/publisher as the installed product. Do not change identity merely to
-   work around installation errors.
-2. Run the tests documented in the README, including
-   `.\scripts\Test-RuntimeIdentifiers.ps1`. The settings tests must also pass with
-   `--filter FullyQualifiedName~SettingsStoreTests -p:JsonSerializerIsReflectionEnabledByDefault=false`.
-3. Run `.\scripts\Build-MsixBundle.ps1`. It publishes all three checked-in profiles
-   with warnings treated as errors, verifies the native executable and package
-   resources, and bundles fresh per-architecture layouts with WinApp CLI.
-4. Inspect the resulting bundle manifest for x64, x86, and ARM64 application
-   packages with matching versions. Retain the publish layouts and native PDBs
-   for crash diagnosis. The SDK's `resources.pri` embeds the compiled XAML;
-   packaging must use `--skip-pri` to preserve it.
-5. Before distribution, sign with the intended publisher certificate and verify
-   the signature. Perform installation and runtime smoke checks on each target
-   architecture, including tray actions, dashboard loading, accessibility,
-   settings persistence, and restart. Cross-publishing alone does not verify
-   those runtime behaviors.
+1. Review the manifest identity, publisher, and four-part version. For an update,
+   increase the version and retain the installed product's identity/publisher.
+   Do not change identity merely to work around installation errors.
+2. Run the [README tests](../README.md#tests), including runtime-identifier checks
+   and both settings/cache persistence tests with reflection-based JSON disabled.
+3. Run `.\scripts\Build-MsixBundle.ps1` from the repository root. It publishes
+   all three profiles with warnings treated as errors, verifies the native
+   executable and required package resources, and bundles fresh layouts.
+4. Inspect the bundle manifest for x64, x86, and ARM64 application packages with
+   matching versions. Retain publish layouts and native PDBs for crash diagnosis.
+   Preserve the SDK's `resources.pri`, which embeds compiled XAML; packaging must
+   use `--skip-pri` rather than regenerate it.
+5. Sign with the intended publisher certificate and verify the signature before
+   distribution. Install and smoke-test each target architecture, including
+   tray actions, dashboard loading, accessibility, settings persistence, and
+   restart. Cross-publishing does not verify runtime behavior.
+
+### NativeAOT runtime checks
 
 The Copilot quota `ItemsSource` must remain a reference-type, read-only list at
 the WinRT boundary. Binding a boxed `ImmutableArray<T>` can compile and publish
 successfully but fail during initial NativeAOT layout with `0x80070057`.
 Check both the initial empty state and populated quota rows in the native app.
+
 The window keeps its platform-owned presenter and queries the generated
 `OverlappedPresenter` projection with C#/WinRT's `As<T>()` helper. Do not replace
 it with `OverlappedPresenter.Create()`, which restores a native frame around the
@@ -50,7 +50,7 @@ otherwise borderless panel.
 
 ```powershell
 .\scripts\Build-MsixBundle.ps1
-# Or select a new output directory explicitly:
+# To select a new output directory:
 .\scripts\Build-MsixBundle.ps1 -OutputDirectory .\artifacts\packages\release-candidate
 ```
 
@@ -66,10 +66,21 @@ dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj -c Release -p:PublishP
 dotnet publish .\src\GitHubTray.App\GitHubTray.App.csproj -c Release -p:PublishProfile=win-arm64 -warnaserror
 ```
 
-Profiles default to `artifacts\nativeaot\win-<architecture>`. The bundle script
-overrides the output directory to isolate every build. It adds Visual Studio's
-Installer directory to PATH only for the script's lifetime to support linker
-discovery; it makes no persistent toolchain changes.
+The profiles in `src\GitHubTray.App\Properties\PublishProfiles` default to
+`artifacts\nativeaot\win-<architecture>`. Verify an individual publish with:
+
+```powershell
+.\scripts\Test-NativeAot.ps1 -PublishDirectory .\artifacts\nativeaot\win-x64
+```
+
+Use clean output directories when switching deployment modes. The verifier
+requires the `DotNetRuntimeDebugHeader` export, checks package resources, and
+rejects managed app/JIT payloads. An `.exe` alone is not proof of NativeAOT.
+Package the publish layout, not the managed build output.
+
+The bundle script isolates every build in a new directory. It adds Visual
+Studio's Installer directory to PATH for the script's lifetime to support linker
+discovery, then restores PATH.
 
 ## Signing and installation
 

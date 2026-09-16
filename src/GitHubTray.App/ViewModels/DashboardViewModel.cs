@@ -276,7 +276,6 @@ public sealed partial class DashboardViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanClearCachedData))]
     [NotifyPropertyChangedFor(nameof(CanRefresh))]
-    [NotifyCanExecuteChangedFor(nameof(ClearCachedDataCommand))]
     [NotifyCanExecuteChangedFor(nameof(RefreshCommand))]
     public partial bool IsClearingCachedData { get; private set; }
 
@@ -339,9 +338,6 @@ public sealed partial class DashboardViewModel : ObservableObject
 
     [ObservableProperty]
     public partial bool IsSettingsOpen { get; set; }
-
-    [ObservableProperty]
-    public partial string RefreshScheduleLabel { get; set; } = "Refresh every 5 minutes";
 
     public bool HasRefreshError => RefreshError.Length != 0;
     public bool HasSettingsWarning => SettingsWarning.Length != 0;
@@ -438,7 +434,7 @@ public sealed partial class DashboardViewModel : ObservableObject
             IsSettingsLoaded = !_isShuttingDown;
         }
 
-        UpdateRefreshSchedule();
+        _refreshTimer.Interval = TimeSpan.FromMinutes(_committedSettings.RefreshMinutes);
         if (!_isShuttingDown)
         {
             _refreshTimer.Start();
@@ -636,7 +632,6 @@ public sealed partial class DashboardViewModel : ObservableObject
         OnPropertyChanged(nameof(EmptyMessage));
     }
 
-    [RelayCommand(CanExecute = nameof(CanClearCachedData))]
     public Task ClearCachedDataAsync()
     {
         if (!CanClearCachedData)
@@ -744,7 +739,7 @@ public sealed partial class DashboardViewModel : ObservableObject
                     {
                         _refreshSession.SetRefreshInterval(TimeSpan.FromMinutes(settings.RefreshMinutes));
                         _refreshTimer.Stop();
-                        UpdateRefreshSchedule();
+                        _refreshTimer.Interval = TimeSpan.FromMinutes(settings.RefreshMinutes);
                         _refreshTimer.Start();
                     }
 
@@ -787,13 +782,6 @@ public sealed partial class DashboardViewModel : ObservableObject
                 }
             }
         }
-    }
-
-    private void UpdateRefreshSchedule()
-    {
-        var minutes = _committedSettings.RefreshMinutes;
-        _refreshTimer.Interval = TimeSpan.FromMinutes(minutes);
-        RefreshScheduleLabel = $"Refresh every {minutes} {(minutes == 1 ? "minute" : "minutes")}";
     }
 
     private async void OnRefreshTimerTick(DispatcherQueueTimer sender, object args) =>
@@ -842,7 +830,6 @@ public sealed partial class DashboardViewModel : ObservableObject
         _preferenceSaveTimer.Tick -= OnPreferenceSaveTimerTick;
         RefreshCommand.NotifyCanExecuteChanged();
         SaveSettingsCommand.NotifyCanExecuteChanged();
-        ClearCachedDataCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanClearCachedData));
         try
         {

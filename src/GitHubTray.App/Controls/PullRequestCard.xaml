@@ -146,7 +146,6 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="{x:Bind Data.Repository, Mode=OneWay}"
-                               Visibility="{x:Bind local:PullRequestCard.Visible(ShowRepository), Mode=OneWay}"
                                Style="{StaticResource CaptionTextBlockStyle}" TextTrimming="CharacterEllipsis"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                ToolTipService.ToolTip="{x:Bind Data.Repository, Mode=OneWay}" />
@@ -383,7 +382,7 @@
                 </Button>
                 <!-- One status badge lives at the top of the card; the footer only carries volume. -->
                 <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,2,0,0"
-                            Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasCardFooter), Mode=OneWay}"
+                            Visibility="{x:Bind local:PullRequestCard.Visible(Data.HasComments), Mode=OneWay}"
                             AutomationProperties.Name="{x:Bind Data.CommentSummary, Mode=OneWay}"
                             ToolTipService.ToolTip="{x:Bind Data.CommentSummary, Mode=OneWay}">
                     <FontIcon Glyph="&#xE8BD;" FontSize="11"

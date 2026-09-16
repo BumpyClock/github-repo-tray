@@ -1,394 +1,285 @@
-# RepoBar to WinUI 3
+# Architecture and porting notes
 
-## Goal and agreed first milestone
+GitHub Tray is a C# / WinUI 3 notification-area app inspired by
+[RepoBar](https://github.com/steipete/RepoBar). It implements account activity,
+authored PRs, review requests, recently pushed repositories, contributions, and
+Copilot quota. It reuses GitHub CLI authentication rather than porting macOS
+authentication or platform services.
 
-Build an original C# / WinUI 3 Windows notification-area app inspired by
-[RepoBar](https://github.com/steipete/RepoBar). The first milestone focuses on the
-signed-in user's GitHub activity, authored pull requests, review requests, and
-recently pushed repositories. Authentication reuses GitHub CLI. The follow-up
-contribution-graph milestone adds the real last-year GitHub contribution calendar
-above those activity modes.
+RepoBar is MIT licensed and is a behavioral reference, not a build dependency.
+The app does not copy its Swift implementation or artwork. Preserve upstream
+copyright and license notices if code or assets are reused.
+[CodexBar](https://github.com/steipete/CodexBar), also MIT licensed, is a reference
+for the Copilot usage endpoint, not a dependency or credential source.
 
-Reference checkout: `%USERPROFILE%\Projects\references\RepoBar`.
-Reference revision: `8ec7033a8404e815956a7009c97bdc7f5f3f6bc2`.
-RepoBar is MIT licensed. Its source is a behavioral reference, not a build
-dependency. No Swift implementation or RepoBar artwork is copied into this port.
-Preserve its copyright and MIT notice if code or assets are reused in a future
-milestone. The app currently uses the official WinUI template's placeholder icon.
-
-## Implementation sequence
-
-1. Establish a typed, independently testable GitHub data boundary. Invoke `gh api`
-   without a shell, with read-only methods, a fixed GitHub.com host, cancellation,
-   and a request timeout. Never retrieve or persist tokens.
-2. Build a native WinUI tray shell with account identity, four activity modes,
-   browser links, refresh, and settings. Closing the panel must not quit the app.
-3. Add bounded periodic refresh, per-section error states, last-success retention
-   during transient failures, and validated, atomic local settings persistence.
-4. Verify response parsing, authentication failures, account switching, partial
-   failures, cancellation, persistence, native launch, and tray interactions.
-5. Extend toward RepoBar parity only after the activity workflow is usable.
-
-## Architecture and ownership
+## Module ownership
 
 | Component | Responsibility |
 | --- | --- |
-| `GitHubTray.Core` | Domain snapshot, explicit refresh reasons, section-freshness selection, safe URL/JSON boundary, GitHub CLI process lifecycle, read-only REST and GraphQL queries, settings storage, and versioned account-cache persistence/clearing. No WinUI dependency. |
-| `GitHubTray.AppState` | App-owned refresh session: single-flight refresh, retained recovery data, clear-generation fencing, coalesced forced manual follow-up, immutable published state, refresh cancellation and draining. References Core, with no WinUI dependency. |
-| `GitHubTray.App` | WinUI views and MVVM projection, native refresh scheduling, settings orchestration, Windows notification-area lifecycle, window placement, browser launching. |
-| `GitHubTray.Core.Tests` | Deterministic response fixtures; no live authentication or network dependency. |
-| `GitHubTray.AppState.Tests` | Production refresh-session and Core behavior with fixture transport responses; no WinUI runtime, live authentication, or network dependency. |
-| `GitHubTray.App.Tests` | Source-linked production heatmap view-model tests without a WinUI runtime or live data. |
+| `GitHubTray.Core` | Domain snapshots, section freshness, URL/JSON validation, GitHub CLI process lifecycle, read-only API queries, settings, and versioned account-cache persistence. No WinUI dependency. |
+| `GitHubTray.AppState` | The refresh session: single-flight requests, recovery data, cache-clear coordination, immutable publication, cancellation, and shutdown. References Core, not WinUI. |
+| `GitHubTray.App` | WinUI views and MVVM projection, native timers, settings orchestration, tray lifecycle, placement, and browser launching. |
+| `GitHubTray.Core.Tests` | Fixture-based API, transport, settings, and cache tests. |
+| `GitHubTray.AppState.Tests` | Production session and Core behavior with fixture transport responses. |
+| `GitHubTray.App.Tests` | Source-linked production view-model and presentation-helper tests without a WinUI runtime. |
 
-The App-owned refresh session separates saved data, verification, and publication:
+The automated test projects do not require live authentication or network access.
+Commands and native UI checks are in the [README](../README.md#tests).
 
-- **Saved dashboard:** durable account-scoped per-section successes eligible for
-  cache-first display with their original timestamps and provenance.
-- **Verification state:** independently records whether the displayed account is
-  still being checked, verified for this process, or failed verification.
-- **Published dashboard:** data currently eligible for display. It may be saved
-  and explicitly unverified, or verified with individually stale sections.
+## Refresh and account trust
 
-The session exposes one immutable current state and shares one in-flight refresh
-across startup, timer, toolbar, keyboard, and tray requests. Entry points carry
-`Startup`, `Periodic`, or `Manual` through the session into Core. WinUI projects
-state into bindings on the UI thread; it does not own a second recovery snapshot.
-Displayability and account trust are separate: an identity or network failure
-keeps saved rows, contributions, repositories, PR checks, and Copilot usage
-readable while marking the account unverified and exposing the verification error.
+`DashboardRefreshSession` separates three concerns:
 
-Core evaluates same-account successful-section timestamps after the initial
-identity operation. Startup can reuse Activity and both PR lists while they are
-younger than the configured refresh interval. Periodic cycles always fetch those
-three sections. Repositories and contributions use a 15-minute automatic window;
-Copilot uses five minutes. Boundaries are exclusive: age equal to the window
-requires a fetch. Manual refresh bypasses every window.
+- Saved dashboard data consists of account-scoped section successes, with
+  original timestamps and cache provenance.
+- Verification state records whether the displayed account is pending
+  verification, verified for this process, or failed verification.
+- Published state is the immutable snapshot eligible for display. It may contain
+  saved, explicitly unverified data or verified data with stale sections.
 
-The durable JSON store and an optional in-memory recovery snapshot feed the same
-Core hydration policy, with no second TTL implementation or identity probe.
-On process startup, Core resolves the store's durable last-used account and
-publishes its eligible sections before awaiting `/user`. Verification failure
-leaves that snapshot published but unverified. A confirmed different REST account
-or account/viewer mismatch clears the prior snapshot before pending section work
-can publish. If startup confirms a different account, only that account's own
-eligible cache can replace the previous account's saved content. Reuse returns the original section object, timestamp,
-successful-empty state, and failure provenance.
+WinUI projects the session state on the UI thread. It does not own another
+recovery snapshot. Immutable snapshots can be shared; mutable inputs are frozen
+at the publication boundary.
 
-Core verifies `/user` before requesting new account-specific data and verifies the account
-again before publishing the completed live snapshot. A detected account change,
-including a mismatched GraphQL viewer, rejects the entire refresh rather than
-mixing data under the original account label. Individual section
-failures keep that section's last successful items and timestamp, clearly marked
-as stale. A different account invalidates the previous snapshot's cached sections.
-An identity lookup failure is an error, not a successful refresh; saved data may
-remain visible only with failed verification state.
+Startup, periodic, and manual requests carry their refresh reason into
+`DashboardService`. Overlapping requests share one in-flight task. If a manual
+request overlaps an automatic refresh that reused sections, the shared task
+includes at most one forced full follow-up. Additional manual triggers share it.
+Cancelling a caller's wait does not cancel the session's work.
 
-Native timers remain in the App, outside the refresh session. On shutdown the
-App stops those timers and cancels settings work; the session stops accepting
-refreshes, cancels and drains its active refresh, and prevents late publication.
-The App also waits for initialization and settings work before closing.
-While hidden, the panel stops only its local timestamp/countdown clock and catches
-up on reveal. Scheduled API refresh continues at the configured interval.
-Dashboard projection also waits while hidden: the latest session state is applied
-before reveal, including verification failures that retain saved data and proven
-account changes that remove old-account data.
-The hidden panel releases its page and presentation rows while retaining the
-native window shell, tray, settings, and refresh session. Reopening rebuilds the
-page from that session rather than refetching data. This intentionally exchanges
-reopen work for a smaller retained presentation graph; it does not promise that
-the allocator immediately returns all released memory to Windows. While visible,
-unchanged section metadata and item identities retain existing presentation rows.
-Already deeply immutable session snapshots are shared instead of being recopied;
-mutable inputs are still frozen at the publication boundary.
-The repeating timer is not restarted when a refresh completes, so Activity and
-PR cadence stays tied to scheduled ticks rather than completion time. If a manual
-request overlaps an automatic cycle that reused sections, the shared flight runs
-at most one forced full follow-up. More manual triggers share that same task.
-Cancelling a caller's `WaitAsync` does not cancel session-owned work; only session
-shutdown controls the lifetime token.
+Core applies the [automatic freshness windows](../README.md#refresh-and-saved-data)
+after the initial identity request. Reuse preserves the original section,
+successful-fetch timestamp, successful-empty state, and known error. Manual
+refresh bypasses freshness. Timers stay in the App, are not restarted on refresh
+completion, and do not add immediate retry loops.
 
-The primary instance starts its initial refresh before constructing the window.
-Window initialization adopts that exact session and refresh task, including an
-already-completed task, rather than issuing a second startup refresh. Settings
-loading runs independently of the initial data projection. The panel opens
-immediately with loading feedback; early fetching overlaps setup without delaying
-the first show. Local cache hydration completes independently of the initial
-identity request, so saved data can reach WinUI while `/user` is still blocked.
-Account-state changes are projected during every refresh, so confirmed account
-changes remove old content before delayed section requests finish. The persisted refresh interval
-loads concurrently and is applied before startup Activity/PR freshness selection.
-Cache misses and identity failures do not add another identity probe.
-One settings-load task supplies both startup freshness and the window's settings
-projection. Startup owns its cancellation and observes it during failed window
-construction or shutdown.
+### Startup and identity checks
 
-Successful dashboard sections are persisted under the app's user-local
-`dashboard-cache` directory, separate from `settings.json`. Records use
-source-generated JSON, a document schema revision, per-section/query revisions,
-and host/stable-user-ID partitions. Each section expires independently at an age
-of seven days; equality with the seven-day boundary is expired. Reads and failed
-refreshes do not renew timestamps. Atomic replacement and a single store gate
-protect the last valid record from failed, cancelled, or concurrent writes.
-Malformed, incompatible, expired, and inaccessible records become explicit cache
-miss diagnostics without preventing live data from loading.
-The store also owns an atomic `last-account.json` selector. Confirmed identity,
-not section freshness, updates it. Existing installations without the selector
-migrate once by examining the newest owned account-record file by filesystem write
-time. A reusable newest record is persisted as the selection; a malformed,
-incompatible, or expired newest record returns its explicit diagnostic without
-falling back to an older record. Later section timestamps cannot change a
-successful selection.
-Malformed, incompatible, or inaccessible selectors produce explicit diagnostics;
-they do not trigger migration to a different saved account.
+The primary instance starts the refresh before constructing the window. The
+window adopts that session and task, even if the task has already completed.
+One settings-load task supplies both startup freshness and Preferences; its
+refresh interval is resolved before startup Activity/PR reuse is decided.
+The panel opens with loading feedback rather than waiting for GitHub.
 
-The settings surface exposes **Clear cached data** for every cached account.
-Clearing advances both store and refresh-session invalidation generations, removes
-only cache-owned account records, the selector, and interrupted temporary writes, clears private
-recovery/freshness input, and forces the next accepted refresh to fetch all six
-sections. The current published snapshot may remain rendered but is not passed
-back to Core as reusable state. A pre-clear read, write, hydrated publication, or
-refresh completion cannot cross the generation fence; only verified post-clear
-successes can repopulate storage. Manual refresh from the tray, accelerator, or
-other entry point during deletion shares one task that covers clearing and one
-forced full refresh afterward.
+Local cache hydration publishes eligible last-used-account data before Core
+awaits the first `GET /user`. The header marks it saved and unverified. If the
+identity request fails, the saved snapshot remains readable with a verification
+error. Displayability is not proof of account trust.
 
-Deletion runs away from the UI thread and is serialized with reads and atomic
-writes. Concurrent clear requests share one task. Shutdown cancels and drains
-clearing with other accepted lifecycle work. Partial deletion reports exact
-deleted/failed file counts and keeps the session invalidated; it never claims
-success or deletes `settings.json`, credentials, or unrelated files.
+Before fetching new account-specific data, Core verifies `/user`. It verifies the
+account again before publishing the completed live snapshot. GraphQL viewers and
+the Copilot response login must match the expected account. A confirmed change
+removes the previous account's published content immediately; a mismatch during
+the refresh rejects the new snapshot rather than combining accounts. If startup
+confirms a different account, only that account's own eligible cache can replace
+the saved content.
 
-The refresh interval and contribution cell-size preset remain in the settings
-file. A malformed settings file produces a visible warning; it is replaced only
-when the user explicitly saves a valid setting. Cache records can contain private
-dashboard metadata and Copilot quota details, but never credentials,
-authorization headers, or raw authentication errors. The product intentionally
-allows those saved private surfaces to appear before network verification and to
-remain readable when verification fails; trust labels and errors must never imply
-that verification or refresh succeeded.
+Individual section failures retain only that account's eligible last-success
+data and timestamp, with an explicit stale indicator. An identity lookup failure
+is an error, not a successful refresh.
 
-## GitHub contract
+### Visibility and shutdown
 
-| View | API |
+Hiding releases the page, presentation rows, popups, and acrylic backdrop while
+retaining the tray, native shell, settings, and session. The local
+timestamp/countdown clock and dashboard projection pause; scheduled API refresh
+continues. Reopening applies the latest state and reconstructs the page before
+showing it, without another fetch. Selected mode and preference values survive,
+but list scrolling and transient popups do not.
+
+This reduces retained presentation objects at the cost of rebuilding them on
+reveal. It does not guarantee an immediate return of memory to Windows.
+While visible, unchanged sections retain their presentation rows. Check-detail
+view models and flyout content are created on demand and reused only for the
+card's snapshot; recycled or unloaded cards release popup content and avatars.
+Avatar decoding is bounded to 96 pixels for the 24-DIP display.
+
+Shutdown stops timers and settings work, rejects new session refreshes, cancels
+and drains active refresh/clear work, and prevents late publication. The App also
+waits for initialization and settings work before closing.
+
+## Persistence
+
+`SettingsStore` and `JsonDashboardCacheStore` use source-generated JSON metadata.
+Settings and dashboard records are separate under the package's user-local data
+folder. Malformed settings produce a visible warning and are replaced only when
+the user saves a valid setting.
+
+### Account cache
+
+Records are partitioned by host and stable user ID, retaining the login for
+display. A document schema and per-section/query revisions prevent incompatible
+data from being reused. Each successful section is reusable for less than seven
+days; equality with that boundary is expired. Reads and failed refreshes do not
+renew timestamps. Successful empty responses replace previous nonempty results.
+The durable store and in-memory recovery use the same retention policy.
+
+Atomic replacement and a store gate protect the previous valid record from
+failed, cancelled, or concurrent writes. Malformed, incompatible, expired, and
+inaccessible records produce diagnostics without blocking live data.
+
+An atomic `last-account.json` selector records the last confirmed identity, not
+the section with the newest success time. If the selector is absent, migration
+examines the newest owned account-record file by filesystem write time and saves
+the selection only if that record is reusable. An invalid or expired newest
+record produces a diagnostic without falling back to an older account. An
+unreadable or incompatible existing selector likewise does not select another
+account silently.
+
+Cache records may contain private dashboard metadata and Copilot quota. They
+must not contain credentials, authorization headers, or raw authentication
+errors. Offline display deliberately permits saved private data before account
+verification and after verification failure. Trust labels must never imply that
+verification or refresh succeeded when it did not.
+
+### Clearing
+
+**Clear cached data** advances store and session invalidation generations. It
+removes cache-owned account records, the selector, and interrupted temporary
+writes, and clears recovery/freshness input. The current snapshot may remain
+displayed but cannot satisfy automatic reuse. The next accepted refresh must
+fetch all six sections.
+
+Pre-clear reads, writes, hydration, and refresh completion cannot cross the
+generation boundary. Only successful verified post-clear results can repopulate
+storage. Repeated clears share one operation. Manual refresh during deletion
+shares a task covering deletion and one forced full refresh afterward.
+
+Deletion runs off the UI thread and is serialized with reads and writes. Partial
+deletion reports deleted/failed counts and leaves reuse invalidated. It never
+deletes settings, credentials, or unrelated files.
+
+## GitHub API contract
+
+| Data | API |
 | --- | --- |
-| Account | `GET /user` |
-| Contributions | `POST /graphql` with a read-only `viewer.contributionsCollection.contributionCalendar` query |
-| Copilot usage | `GET /copilot_internal/user` through the same GitHub CLI account |
-| Activity | `GET /users/{login}/events?per_page=30`, then one bounded GraphQL batch for referenced PRs |
-| My PRs | Read-only GraphQL `search(type: ISSUE, first: 30)` for `is:pr author:{login} sort:updated-desc`, including all PR states and latest-commit checks |
-| Reviews | The same GraphQL selection for `is:pr is:open review-requested:{login} sort:updated-desc` |
+| Account | `GET /user`, before and after section loading |
+| Contributions | Read-only `POST /graphql`, using `viewer.contributionsCollection.contributionCalendar` |
+| Copilot usage | `GET /copilot_internal/user` |
+| Activity | `GET /users/{login}/events?per_page=30`, plus one GraphQL batch if the events reference PRs |
+| My PRs | GraphQL `search(type: ISSUE, first: 30)` for `is:pr author:{login} sort:updated-desc` |
+| Reviews | The same selection for `is:pr is:open review-requested:{login} sort:updated-desc` |
 | Repositories | `GET /user/repos?sort=pushed&direction=desc&per_page=30&affiliation=owner,collaborator,organization_member` |
 
-Each activity list is bounded, not a complete history or a total count.
-Activity means the user's generated events, not the followed-user feed,
-notifications inbox, or contribution calendar. GitHub's Events API can be delayed
-and returns a limited historical window. Private data depends on the active
-credential's repository access and organization SSO. GraphQL errors, including
-responses containing partial data, are reported rather than silently replacing
-the last complete section.
+`GitHubCliApi` launches `gh api` without a shell, fixes the host to GitHub.com,
+disables prompts and inherited HTTP debugging, and uses a 30-second timeout per
+call. Cancellation terminates and drains the child process. Validation runs
+before process creation, including for already-cancelled requests. Raw stderr is
+classified into fixed messages rather than exposed or stored.
 
-### Copilot usage contract
+The app does not change GitHub CLI's saved-account selection or environment-token
+precedence. Private data depends on credential permissions and organization SSO.
+Browser navigation accepts only HTTPS GitHub.com URLs.
 
-Reference checkout: `%USERPROFILE%\Projects\references\CodexBar`, revision
-`b202fc0c8ce7f6b39d6acc832f5cb15ede1e4dd2` (MIT licensed).
-Its Copilot provider confirms the same internal usage endpoint. The live GitHub
-response also includes newer quota/reset fields not modeled by that reference
-revision; this implementation follows the observed response rather than copying
-its older quota assumptions. No CodexBar code or artwork is copied.
+GraphQL accepts restricted read-only field selections and exact generated PR
+operations. The latter validate logins or repository/number references, fixed
+selections, and limits; arbitrary arguments and mutations are rejected.
+GraphQL errors, including errors alongside partial data, fail the section instead
+of silently replacing its last complete result.
 
-The original native Copilot card uses `gh api copilot_internal/user`, not a
-Copilot CLI subprocess or a separate OAuth flow. The response login must match
-the initially verified GitHub account, and the existing final identity check
-still gates publication. Missing access, malformed responses and unknown quota
-schemas produce a section error; account mismatches reject the full refresh.
-Last-success usage is immutable, account-scoped, eligible for the same
-seven-day durable retention, and visibly stale after a failed request. It shares
-the dashboard's single-flight refresh and
-shutdown cancellation rather than adding a timer or retry loop.
+A successful full refresh uses eight API calls when Activity has no PR
+references, or nine when it requires the detail batch. A periodic refresh with
+fresh repositories, contributions, and Copilot uses five or six respectively.
+An all-fresh eligible startup uses only the two identity calls. Each call launches
+one `gh` process; request counts are not a latency guarantee.
 
-`quota_snapshots` supplies premium interactions, chat and completions.
-`token_based_billing` selects the AI-credit label rather than legacy premium
-requests. Finite meters show `100 - percent_remaining`; the other counters are
-not assumed to be requests, credits or money. Unlimited quotas have no meter,
-absent quotas are omitted, and missing all supported quotas is an error.
-Quota-specific nonzero Unix reset times take precedence over
-`quota_reset_date_utc`, then `quota_reset_date`; missing dates are disclosed, not
-guessed. Reset times display as a relative countdown (days/hours, hours/minutes,
-or minutes), updated by the existing one-minute UI clock without another API
-request. An elapsed reset remains "Reset pending" until fresh data arrives.
-The card has a top divider, no redundant GitHub Copilot heading, and no unlimited
-chat/completion summary; the quota label, plan, meter and countdown remain.
+### PRs and activity
 
-This is an undocumented GitHub endpoint, not the organization-admin usage
-metrics API. It reports account-wide quota rather than CLI-session consumption
-or a complete bill. CodexBar is a behavioral reference for the endpoint and
-quota presentation; its authentication, credential storage and macOS code are
-not ported. GitHub Tray still never retrieves, displays or saves tokens.
+My PRs includes all PR states, ordered by update time. Reviews contains open
+requests awaiting the account's review. Each query returns up to 30 PRs, the first
+10 labels with their total, and the latest commit's `statusCheckRollup` with up to
+100 check runs/legacy status contexts and their total.
 
-### Pull requests and contributions
+The rollup remains authoritative when context details are truncated. Partial
+counts must not appear as complete progress. No rollup means "No checks", not
+success. Unknown, queued, running, cancelled, neutral, skipped, and
+action-required outcomes retain distinct states. PR metadata and checks belong
+to one immutable snapshot; old checks must not attach to a new head commit.
 
-The two PR queries each fetch metadata, the first 10 labels with their total,
-and `commits(last: 1).commit.statusCheckRollup`, including up to 100 check runs
-and legacy status contexts with their actual total. GitHub's rollup remains
-authoritative when context details are truncated; counts from a partial list
-must not be presented as complete progress. No rollup is "No checks", not success.
-Unknown, queued, running, cancelled, neutral, skipped, and action-required checks
-retain distinct states. PR metadata and checks are one immutable snapshot, so a
-refresh never attaches old checks to a new head commit. Each PR query verifies
-the GraphQL viewer in addition to the surrounding REST identity checks.
-Cards prepare summary text eagerly, but defer individual check-detail viewmodels
-and the flyout content tree until the checks flyout opens. Details are reused only
-for that card's snapshot; recycled or unloaded cards release their popup content
-and avatar references. The 24-DIP avatar uses a bounded 96-pixel decode rather than
-retaining a full-resolution image. Check bars reuse their distribution for an
-unchanged width and segment set.
-The CLI boundary permits only the exact generated PR operations (validated login
-or repository/number references, fixed selections and limits); arbitrary GraphQL
-arguments and mutations remain rejected. There are no per-PR fan-out requests or
-new polling timers.
-The activity batch shares one fixed `PullRequest` fragment across its aliases,
-so metadata and check selections appear only once in the request. The complete
-document, including that fragment, remains subject to exact allowlist validation.
-Already-cancelled requests are rejected before preparing or starting a CLI process;
-input validation still runs first.
-
-My PRs includes open, closed, and merged authored PRs, ordered by update time.
-Reviews continues to show open requests awaiting the account's review.
-Activity first sorts and deduplicates the latest 30 events, then groups PR events,
+Activity sorts and deduplicates the latest 30 events, then groups PR events,
 reviews, review comments, and issue comments on PRs by repository and PR number.
-Each group keeps its latest event time/action and the number of events in that
-fetched window. Non-PR activity is preserved as separate rows. One additional
-GraphQL batch fetches current details for at most 30 referenced PRs, reusing the
-same card data selection as the PR modes. Closed and merged PRs are included.
-Batch failures retain the previous activity section with an explicit stale
-warning; unavailable PRs are never replaced by invented titles, authors, or CI.
+Groups retain the latest event time/action and count within that window.
+Non-PR events remain separate. The detail query batches at most 30 PRs, including
+closed/merged ones, using one shared fragment and no per-PR fan-out.
+An inaccessible PR or failed batch fails the Activity section; it does not
+produce invented metadata or checks.
 
-The contribution graph is a separate data source: GraphQL returns the period
-total, week boundaries, daily dates/counts, and contribution intensity levels.
-Omitting `from` and `to` uses GitHub's default last-year interval. The graph labels
-the actual returned date range, retains partial first/last weeks, and leaves
-out-of-range cells blank. It never derives contribution counts from events.
-The authenticated GraphQL viewer must match the REST account before a newly
-fetched calendar is published as verified. GraphQL errors and malformed calendars are failures even when
-HTTP succeeds; a failed refresh may retain only that same account's last
-successful calendar, visibly marked stale.
+### Contributions
 
-GitHub CLI chooses credentials, including `GH_TOKEN` / `GITHUB_TOKEN` environment
-precedence and its current saved account. The app does not change that selection.
-All requests explicitly target GitHub.com. Each CLI call has a 30-second timeout.
-Refresh defaults to five minutes and is configurable from one to sixty minutes.
-Errors do not trigger an immediate retry loop. A manual refresh always retries
-all sections; automatic retries follow the section freshness policy and preserve
-an eligible prior success's original timestamp and error. Eligible per-section
-successes are durable across restarts and may be shown immediately as saved,
-unverified data. Browser links are restricted to HTTPS GitHub.com URLs.
+The calendar supplies the total, week boundaries, daily dates/counts, and
+intensity levels. Omitting `from` and `to` uses GitHub's default last-year
+interval. Partial first/last weeks are retained; future and out-of-range cells
+remain blank. Contribution counts are never derived from events. Malformed
+calendars and GraphQL errors are failures even when HTTP succeeds.
 
-A normal authenticated full refresh has eight operations: initial identity, six
-section operations, and final identity. With all non-cadence sections fresh, a
-periodic cycle has five operations: both identities plus Activity and both PR
-lists. An all-fresh eligible hydrated startup has only the two identity
-operations. Tests assert these shapes and the absence of skipped transport calls.
-No live cold/warm GitHub timing was captured, so these counts are evidence of
-avoided requests and subprocesses, not a measured speedup.
+### Copilot quota
 
-The heatmap view model owns selection transitions and returns immutable previous
-and current selections for keyboard input, pointer input, and calendar replacement.
-Replacement retains the selected date when available and otherwise selects the
-latest returned day; an unavailable calendar clears selection. The native control
-synchronizes the outline after any cell rebuild, even when the accessible value
-is unchanged. Changed values raise UI Automation value-property notifications;
-only changed user selections request a polite live-region announcement.
-Day cells reuse one localized description for their automation name and hover
-tooltip.
-Returning to the present reuses cell geometry when viewport width, DPI, week
-count, and preset are unchanged, while still restoring selection and scroll
-position. Replacing cells or reactivating the graph invalidates that geometry.
-Skeleton updates reuse the running animation when its targets and stagger
-origin are unchanged; hiding, unloading, or disabling motion stops it.
+`copilot_internal/user` is undocumented and may change or deny access. It is not
+the organization-admin metrics API, a session-usage endpoint, or a complete bill.
+No Copilot CLI subprocess, separate OAuth flow, or credential extraction is used.
 
-## Native UX contract
+`quota_snapshots` supplies premium interactions, chat, and completions.
+`token_based_billing` selects the AI-credit label for premium interactions;
+finite meters use `100 - percent_remaining`. Other counters are not assumed to
+be request counts, credits, or money. Unlimited quotas have no meter, absent
+quotas are omitted, and missing all supported quotas is an error. The UI omits
+unlimited chat/completion rows.
 
-- Visual reference: the user's selected
-  [RepoBar macOS screenshot](https://github.com/steipete/RepoBar/blob/main/docs/assets/repobar.png).
-  Match its compact translucent menu, dense divided rows, restrained accent
-  selection, secondary metadata, relative timestamps, and footer actions using
-  native Windows controls and acrylic rather than copying macOS chrome.
-- Compact, 420-DIP-wide taskbar-adjacent panel rather than a browser or full-size dashboard.
-- Header: bold primary-foreground GitHub handle above the secondary display name,
-  with the contribution total and `12 months` at the right. No app title, close
-  button, or Contributions heading. The chart shares the header's text edges,
-  with cell sizes increased proportionally to the wider drawing area.
-- Footer: Preferences, Refresh, and Quit only; no refresh-schedule or Escape hint.
-- Show on launch; closing or Escape returns to the tray. Quit explicitly exits.
-- Four native selectable modes with a virtualized list and clear loading, empty,
-  unavailable, and stale states.
-- Activity, My PRs, and Reviews share an original native `PullRequestCard`, informed by
-  RepoBar's `PullRequestMenuItemView`: avatar, two-line title, compact metadata,
-  monospace branch direction, and label chips. The CI summary opens native
-  check details without activating the PR row. The component emits navigation
-  requests to its host rather than owning account verification or browser
-  launching; repository identity can be hidden when reused in repository details.
-  Open, Draft, Closed, and Merged have distinct badges/icons. PR state and review
-  decisions are separate from CI. Activity cards show the latest action and
-  grouped event count instead of repeating each transition. Refresh failures
-  visibly mark retained check status as stale. Non-PR activity and repository
-  rows stay unchanged.
-- Card status reads as chips rather than prose. The PR state badge sits beside the
-  title, and the CI and review-decision chips share the footer row; all three are
-  tinted with the Windows success, caution, attention, critical, and neutral status
-  tokens so severity is visible before the text is read. Stale check results always
-  read as caution. Label chips wrap onto as many lines as they need, tinted with
-  their own GitHub color while names keep platform text brushes; high contrast
-  drops the tint. A trailing `+N` chip covers labels beyond the shown ones.
-- The CI chip names the loaded outcomes as counts, worst first
-  (`1 failed · 1 running · 2 passed`), instead of a vague verdict such as "mixed
-  outcomes". Counts never claim success: neutral, skipped, and cancelled stay
-  named, and an aggregate outcome that no loaded check shows is stated in front of
-  the counts (`Checks failed · 1 passed`). A truncated list still reports only the
-  aggregate.
-- A native contribution heatmap above the modes, with the real total
-  and an accessible date range. Its borderless container shrinks with the preset
-  and keeps all seven rows visible (up to 164 DIPs for Large), using
-  pixel-aligned square-cell layout rather than bitmap scaling. Gesture and
-  keyboard zoom are deferred. No zoom toolbar or month/day axis labels. Preferences offers S/M/L:
-  Small fits the loaded year; Medium and Large preserve larger squares and scroll
-  horizontally instead of shrinking with the window. The preset persists; reopening starts at the latest week on the
-  right. Horizontal scrolling explores the loaded year. End selects the latest day.
-- Cell details appear only in hover/keyboard tooltips; no legend or visible
-  selected-day detail strip. Preserve empty space and the selected-day UIA value
-  and live-region peer. Zero-activity cells use a neutral background token at 50%
-  opacity plus a faint stroke, not faded green; high contrast uses opaque system
-  brushes. Future/out-of-range days remain absent.
-- Hide the normal date-range, update-time, and help footer without reserving an
-  empty detail row. Show status text only for loading or errors. Compact calendars
-  are left-aligned, and scrollbar space is reserved only for overflowing history.
-- Reserve the same per-preset plot geometry for loading, empty and error states.
-  First-load skeleton cells shimmer via staggered cell opacity, never a
-  viewport overlay. Motion runs only while the panel and graph are visible and
-  Windows animations are enabled; reduced motion/high contrast use static cells.
-  Refresh retains the last successful eligible calendar instead of replacing it
-  with a skeleton.
-- Manual refresh and a local refresh-interval setting.
-- Follow Windows light/dark/high-contrast colors, system typography, keyboard
-  focus, UI Automation labels, and platform motion preferences.
-- Never start authentication, change OS startup settings, or request broader
-  GitHub permissions in the background.
+Quota-specific nonzero Unix reset times take precedence over
+`quota_reset_date_utc`, then `quota_reset_date`. Missing reset times are disclosed,
+not guessed. The existing one-minute presentation clock updates the countdown
+without another API call. An elapsed reset reads "Reset pending" until fresh
+data arrives. Usage shares dashboard retention, freshness, account verification,
+and cancellation rather than adding its own timer or retry loop.
 
-The screenshot's account contribution heatmap is included. Repository metrics,
-local Git status, repository-specific graphs, and cascading issue/repository
-details belong to later milestones. No unimplemented statistics are fabricated.
+## Native UI constraints
 
-## Later milestones
+- Use native WinUI controls, not a WebView. The taskbar-adjacent panel is normally
+  420 DIPs wide, constrained by the available work area. Acrylic falls back to an
+  opaque theme surface where unsupported.
+- Keep the footer limited to Preferences, Refresh, and Quit. Closing, Escape,
+  and focus loss hide the panel; an unavailable tray prevents hiding so the user
+  does not lose access.
+- Activity, My PRs, and Reviews share `PullRequestCard`. It emits navigation
+  requests to its host; it does not own account verification or browser launch.
+  CI details must open without activating the PR row.
+- Keep PR state, review decisions, and CI distinct. Status chips name outcomes,
+  including stale results, rather than relying on color. Label tints use GitHub
+  colors with platform text brushes; high contrast removes the tint.
+- The contribution graph has seven weekday rows and pixel-aligned square cells.
+  Small fits the loaded year at the standard width; larger presets scroll without
+  shrinking their cells. The container fits the preset, aligns left, and reserves
+  scrollbar space only when history overflows.
+- Day inspection uses hover/keyboard tooltips and a single keyboard focus stop.
+  Arrow keys move selection; Home/End reach the period boundaries. Calendar
+  replacement retains an available selected date or selects the latest day.
+  Changed values notify UI Automation; only changed user selections request a
+  polite live-region announcement.
+- Keep the actual date range accessible without a visible normal-state footer,
+  legend, or selected-day strip. Loading and error status remain visible.
+  Zero-activity cells use a neutral fill and outline; high contrast uses opaque
+  system brushes.
+- Loading, empty, and error states reserve the same per-preset geometry.
+  First-load animation affects cells, not an overlay or gaps. Hide, unload,
+  Preferences, reduced motion, and high contrast stop animation. Refresh retains
+  an eligible calendar instead of replacing it with a skeleton.
+- Follow system typography, theme, focus, accessibility, and motion preferences.
+  Do not initiate authentication, broaden permissions, or change Windows startup
+  settings in the background.
 
-| Milestone | Scope and prerequisite decisions |
-| --- | --- |
-| Repository dashboard | Pinned repositories, CI/check status, separate issue/PR counts, releases, repository-specific graphs. Agree selection and permissions first. |
-| Advanced cache policy | ETags, rate-limit reset/backoff scheduling, and sign-out cleanup. |
-| Native authentication | Register our own OAuth/GitHub App; device/browser flow, Windows credential storage, revocation, and minimal documented permissions. Never reuse upstream credentials. |
-| Multi-account / Enterprise | Explicit account/host selection, host validation, per-account caches, organization SSO diagnostics. |
-| Windows distribution | Final product identity/icon, signed MSIX, installation/update strategy, opt-in launch at sign-in, x64 and ARM64 release checks. |
-| Advanced RepoBar features | Local checkout discovery/status, Git actions, clipboard reference lookup, traffic, discussions, archive import, notifications. Separate product and privacy decisions. |
+NativeAOT interop and packaging constraints are in the
+[release guide](RELEASING.md).
 
-RepoBar's AppKit menus, Keychain storage, Sparkle updates, Finder/Terminal
-integration, and macOS launch-at-login APIs require Windows equivalents rather
-than line-by-line translation.
+## Scope limits
+
+There is no pinned-repository dashboard, repository-specific graph, local checkout
+or Git-action integration, standalone workflow-run monitor, or notifications
+inbox. The app does not provide native OAuth, an account/Enterprise-host selector,
+ETag/backoff scheduling, or automatic cache clearing on GitHub CLI sign-out.
+It does not fabricate unimplemented metrics.
+
+The build produces unsigned MSIX bundles. Production identity, signing,
+installation/update policy, and opt-in launch at sign-in require separate
+distribution decisions. RepoBar's AppKit menus, Keychain, Sparkle, Finder/Terminal,
+and launch-at-login integrations are platform-specific; they cannot be ported by
+line-by-line translation.
