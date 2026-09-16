@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -121,28 +120,15 @@ public sealed class JsonDashboardCacheStore : IDashboardCacheStore
     private int _inactivePruneCursor;
 
     public JsonDashboardCacheStore(string rootDirectory)
-        : this(rootDirectory, null, null, null)
-    {
-    }
-
-    internal JsonDashboardCacheStore(string rootDirectory, Action<string, string>? beforeReplace)
-        : this(rootDirectory, beforeReplace, null, null)
+        : this(rootDirectory, null)
     {
     }
 
     internal JsonDashboardCacheStore(
         string rootDirectory,
         Action<string, string>? beforeReplace,
-        Action<string>? beforeDelete)
-        : this(rootDirectory, beforeReplace, beforeDelete, null)
-    {
-    }
-
-    internal JsonDashboardCacheStore(
-        string rootDirectory,
-        Action<string, string>? beforeReplace,
-        Action<string>? beforeDelete,
-        Action? beforeLastUsedRecordRead)
+        Action<string>? beforeDelete = null,
+        Action? beforeLastUsedRecordRead = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         _rootDirectory = Path.GetFullPath(rootDirectory);

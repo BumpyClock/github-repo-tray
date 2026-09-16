@@ -24,9 +24,6 @@ public sealed partial class PullRequestCard : UserControl
     public static readonly DependencyProperty DataProperty = DependencyProperty.Register(
         nameof(Data), typeof(PullRequestCardViewModel), typeof(PullRequestCard), new PropertyMetadata(null, OnDataChanged));
 
-    public static readonly DependencyProperty ShowRepositoryProperty = DependencyProperty.Register(
-        nameof(ShowRepository), typeof(bool), typeof(PullRequestCard), new PropertyMetadata(true));
-
     public static readonly DependencyProperty IsChecksFlyoutContentLoadedProperty = DependencyProperty.Register(
         nameof(IsChecksFlyoutContentLoaded), typeof(bool), typeof(PullRequestCard), new PropertyMetadata(false));
 
@@ -41,12 +38,6 @@ public sealed partial class PullRequestCard : UserControl
     {
         get => (PullRequestCardViewModel?)GetValue(DataProperty);
         set => SetValue(DataProperty, value);
-    }
-
-    public bool ShowRepository
-    {
-        get => (bool)GetValue(ShowRepositoryProperty);
-        set => SetValue(ShowRepositoryProperty, value);
     }
 
     public bool IsChecksFlyoutContentLoaded

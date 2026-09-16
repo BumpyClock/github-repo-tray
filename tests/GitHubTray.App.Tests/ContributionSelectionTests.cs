@@ -22,7 +22,6 @@ public sealed class ContributionSelectionTests
         Assert.Equal("", change.PreviousDescription);
         Assert.True(change.ValueChanged);
         var current = AssertSelection(vm, change, 3, latest);
-        Assert.Equal(3, vm.WeekCount);
         Assert.Collection(vm.Days,
             day => Assert.Equal(new ContributionPlotDay(Day(2024, 2, 28, 11), 0, 3), day),
             day => Assert.Equal(new ContributionPlotDay(Day(2024, 2, 29, 1), 0, 4), day),
@@ -403,6 +402,5 @@ public sealed class ContributionSelectionTests
         Assert.Null(vm.SelectedDay);
         Assert.Equal("", vm.SelectedDayDescription);
         Assert.Empty(vm.Days);
-        Assert.Equal(0, vm.WeekCount);
     }
 }

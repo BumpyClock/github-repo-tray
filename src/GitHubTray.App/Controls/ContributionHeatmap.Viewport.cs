@@ -126,7 +126,7 @@ public sealed partial class ContributionHeatmap
         }
     }
 
-    public void ReturnToPresent()
+    private void ReturnToPresent()
     {
         if (_released) return;
         CloseSelectionTooltip();

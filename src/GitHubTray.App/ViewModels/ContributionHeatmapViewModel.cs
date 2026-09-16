@@ -34,15 +34,8 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
     public partial string Summary { get; set; } = "Not loaded";
 
     [ObservableProperty]
-    public partial string Range { get; set; } = "";
-
-    [ObservableProperty]
-    public partial string RangeDescription { get; set; } = "";
-
-    [ObservableProperty]
     public partial string AccessibleSummary { get; set; } = "Contributions. No calendar is displayed.";
 
-    public int WeekCount { get; private set; }
     public int SelectedIndex { get; private set; } = -1;
     public bool HasDays => Days.Count > 0;
     public ContributionPlotDay? SelectedDay => _selection?.PlotDay;
@@ -57,10 +50,7 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
         if (days.Length == 0)
         {
             Days = [];
-            WeekCount = 0;
             Summary = calendar is null ? "Not loaded" : $"{calendar.TotalContributions:N0} · 12 months";
-            Range = "";
-            RangeDescription = "";
             AccessibleSummary = calendar is null
                 ? "Contributions. No calendar is displayed."
                 : $"{calendar.TotalContributions:N0} contributions. No daily data was returned.";
@@ -70,15 +60,13 @@ public sealed partial class ContributionHeatmapViewModel : ObservableObject
         var first = days[0].Date;
         var last = days[^1].Date;
         var firstSunday = first.AddDays(-(int)first.DayOfWeek);
-        WeekCount = (last.DayNumber - firstSunday.DayNumber) / 7 + 1;
         Days = days.Select(day => new ContributionPlotDay(
             day,
             (day.Date.DayNumber - firstSunday.DayNumber) / 7,
             (int)day.Date.DayOfWeek)).ToArray();
         Summary = $"{calendar!.TotalContributions:N0} · 12 months";
-        Range = $"{first.ToString("MMM yyyy", CultureInfo.CurrentCulture)} – {last.ToString("MMM yyyy", CultureInfo.CurrentCulture)}";
-        RangeDescription = $"{first.ToString("D", CultureInfo.CurrentCulture)} through {last.ToString("D", CultureInfo.CurrentCulture)}";
-        AccessibleSummary = $"{calendar.TotalContributions:N0} contributions in the last 12 months. {RangeDescription}. Sunday-first calendar.";
+        var rangeDescription = $"{first.ToString("D", CultureInfo.CurrentCulture)} through {last.ToString("D", CultureInfo.CurrentCulture)}";
+        AccessibleSummary = $"{calendar.TotalContributions:N0} contributions in the last 12 months. {rangeDescription}. Sunday-first calendar.";
         var selectedIndex = Array.FindIndex(days, day => day.Date == previousDate);
         return SetSelection(selectedIndex >= 0 ? selectedIndex : days.Length - 1, previous);
     }

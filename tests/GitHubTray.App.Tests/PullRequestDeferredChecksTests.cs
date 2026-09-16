@@ -16,12 +16,11 @@ public sealed class PullRequestDeferredChecksTests
         Assert.True(vm.HasChecks);
         Assert.True(vm.IsChecksTruncated);
         Assert.Equal("Showing 100 of 142 checks", vm.CheckCountLabel);
-        Assert.Equal("100 passed", vm.CheckStateCounts);
         Assert.Equal("Stale · Checks successful · partial list", vm.ChecksSummary);
         Assert.Contains("Stale", vm.ChecksAccessibleName);
         Assert.Contains("Stale", vm.AccessibleName);
         Assert.NotEmpty(vm.Metadata);
-        Assert.NotEmpty(vm.ChecksExplanation);
+        Assert.NotEmpty(vm.ChecksCaveat);
         vm.UpdateRelativeTimestamp(Now.AddHours(1));
 
         Assert.False(vm.HasCreatedCheckDetails);
@@ -50,19 +49,21 @@ public sealed class PullRequestDeferredChecksTests
         var vm = Create("old", CheckState.Passed);
         var flyout = new PullRequestChecksFlyoutState();
 
-        Assert.Null(flyout.Items);
+        Assert.Null(flyout.Groups);
         Assert.Null(flyout.GetOpenData(vm));
         Assert.False(vm.HasCreatedCheckDetails);
 
-        var first = flyout.Open(vm);
-        Assert.Same(vm.Checks, first);
-        Assert.Same(first, flyout.Items);
+        flyout.Open(vm);
+        var first = flyout.Groups;
+        Assert.Same(vm.CheckGroups, first);
+        Assert.Same(vm.Checks[0], Assert.Single(first!).Items[0]);
         Assert.Same(vm, flyout.GetOpenData(vm));
         flyout.Close();
 
         Assert.Null(flyout.GetOpenData(vm));
-        Assert.Same(first, flyout.Items);
-        Assert.Same(first, flyout.Open(vm));
+        Assert.Same(first, flyout.Groups);
+        flyout.Open(vm);
+        Assert.Same(first, flyout.Groups);
     }
 
     [Fact]
@@ -71,18 +72,20 @@ public sealed class PullRequestDeferredChecksTests
         var old = Create("old", CheckState.Passed);
         var replacement = Create("new", CheckState.Failed, isStale: true);
         var flyout = new PullRequestChecksFlyoutState();
-        var oldItems = flyout.Open(old);
+        flyout.Open(old);
+        var oldGroups = flyout.Groups;
 
         // Even before recycling cleanup runs, an action must match the control's current Data.
         Assert.Null(flyout.GetOpenData(replacement));
         flyout.Reset();
-        Assert.Null(flyout.Items);
+        Assert.Null(flyout.Groups);
         Assert.Null(flyout.GetOpenData(old));
         Assert.False(replacement.HasCreatedCheckDetails);
 
-        var replacementItems = flyout.Open(replacement);
-        Assert.NotSame(oldItems, replacementItems);
-        Assert.Equal("new check 0", replacementItems![0].Name);
+        flyout.Open(replacement);
+        Assert.NotSame(oldGroups, flyout.Groups);
+        var replacementItems = Assert.Single(flyout.Groups!).Items;
+        Assert.Equal("new check 0", replacementItems[0].Name);
         Assert.Equal("Failed", replacementItems[0].State);
         Assert.Same(replacement, flyout.GetOpenData(replacement));
         Assert.Null(flyout.GetOpenData(old));
@@ -96,11 +99,12 @@ public sealed class PullRequestDeferredChecksTests
         var flyout = new PullRequestChecksFlyoutState();
         Assert.False(vm.HasChecks);
         Assert.False(vm.HasCreatedCheckDetails);
-        Assert.Empty(flyout.Open(vm)!);
+        flyout.Open(vm);
+        Assert.Empty(flyout.Groups!);
         flyout.Reset();
 
-        Assert.Null(flyout.Open(null));
-        Assert.Null(flyout.Items);
+        flyout.Open(null);
+        Assert.Null(flyout.Groups);
         Assert.Null(flyout.GetOpenData(vm));
     }
 
