@@ -91,8 +91,6 @@ public sealed record CopilotUsageViewModel(
         var status = section?.Error is { } error
             ? $"{(section.IsStale ? "Stale usage" : "Usage unavailable")}: {error}" +
                 (section.UpdatedAt is { } updated ? $" Last success {updated.ToLocalTime():g}." : "")
-            : refreshing
-                ? ""
             : section?.Source == DashboardSectionSource.Cached
                 ? section.UpdatedAt is { } cachedAt
                     ? $"Cached from {cachedAt.ToLocalTime():g}." +
@@ -100,6 +98,8 @@ public sealed record CopilotUsageViewModel(
                     : accountVerified
                         ? "Cached Copilot usage."
                         : "Cached Copilot usage. Account unverified."
+            : refreshing
+                ? ""
             : usage is null ? "Copilot usage has not been loaded."
             : rows.IsEmpty ? "No metered Copilot quota." : "";
         return new(plan, rows, status, section?.Error is not null);

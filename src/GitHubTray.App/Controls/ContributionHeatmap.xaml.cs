@@ -49,7 +49,9 @@ public sealed partial class ContributionHeatmap : UserControl
     }
 
     public static Visibility FeedbackVisibility(bool loading, bool hasDays, bool hasError) =>
-        !loading && (!hasDays || hasError) ? Visibility.Visible : Visibility.Collapsed;
+        DashboardSnapshotPresentation.ShouldShowContributionFeedback(loading, hasDays, hasError)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     public bool HasError
     {

@@ -583,7 +583,9 @@ public sealed partial class DashboardViewModel : ObservableObject
 
         RefreshError = state.Error is { } error
             ? state.Snapshot is { } saved
-                ? $"{error} Showing saved data for @{saved.User.Login}; it remains unverified."
+                ? state.IsAccountVerified
+                    ? $"{error} Showing previously loaded data for @{saved.User.Login}; no new data was published."
+                    : $"{error} Showing saved data for @{saved.User.Login}; it remains unverified."
                 : error
             : "";
         IsRefreshing = state.IsRefreshing;

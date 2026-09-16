@@ -199,7 +199,7 @@ public sealed class DashboardRefreshSessionFreshnessTests
         failedFinalIdentity.Release();
         await forcedInitialIdentity.EnteredAsync();
         Assert.True(fixture.Session.State.IsRefreshing);
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.True(fixture.Session.State.IsAccountVerified);
         Assert.Equal(6, fixture.Api.Requests.Length - before);
         forcedInitialIdentity.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);

@@ -68,7 +68,7 @@ public sealed class CopilotUsageViewModelTests
         var display = CopilotUsageViewModel.Create(
             cached,
             displayable: true,
-            refreshing: false,
+            refreshing: true,
             accountVerified: false);
 
         Assert.Single(display.Quotas);
@@ -91,12 +91,13 @@ public sealed class CopilotUsageViewModelTests
     }
 
     [Fact]
-    public void CachedUsageKeepsQuotaRowsWithoutRefreshStatusNoise()
+    public void CachedUsageKeepsProvenanceWithoutRefreshStatusNoise()
     {
         var cached = Section() with { Source = DashboardSectionSource.Cached };
         var display = CopilotUsageViewModel.Create(cached, true, true);
         Assert.Single(display.Quotas);
-        Assert.False(display.HasStatus);
+        Assert.StartsWith("Cached from", display.Status);
+        Assert.DoesNotContain("refresh", display.Status, StringComparison.OrdinalIgnoreCase);
         Assert.False(display.HasError);
     }
 

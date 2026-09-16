@@ -133,9 +133,11 @@ Malformed, incompatible, expired, and inaccessible records become explicit cache
 miss diagnostics without preventing live data from loading.
 The store also owns an atomic `last-account.json` selector. Confirmed identity,
 not section freshness, updates it. Existing installations without the selector
-migrate once by choosing the newest compatible account-record file by filesystem
-write time, then persist the result so later section timestamps cannot change the
-selection.
+migrate once by examining the newest owned account-record file by filesystem write
+time. A reusable newest record is persisted as the selection; a malformed,
+incompatible, or expired newest record returns its explicit diagnostic without
+falling back to an older record. Later section timestamps cannot change a
+successful selection.
 Malformed, incompatible, or inaccessible selectors produce explicit diagnostics;
 they do not trigger migration to a different saved account.
 

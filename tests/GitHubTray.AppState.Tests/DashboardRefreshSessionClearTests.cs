@@ -188,7 +188,7 @@ public sealed class DashboardRefreshSessionClearTests
         await fixture.RefreshAsync(DashboardRefreshReason.Periodic);
 
         Assert.Same(rendered, fixture.Session.State.Snapshot);
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.True(fixture.Session.State.IsAccountVerified);
         Assert.Equal(readsAfterClear, cache.ReadCount);
         Assert.Equal(writesAfterClear, cache.WriteCount);
 

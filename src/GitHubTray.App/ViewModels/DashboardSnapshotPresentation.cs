@@ -4,6 +4,9 @@ namespace GitHubTray_App.ViewModels;
 
 public static class DashboardSnapshotPresentation
 {
+    public static bool ShouldShowContributionFeedback(bool loading, bool hasDays, bool hasError) =>
+        hasError || !loading && !hasDays;
+
     public static string AccountDescription(
         DashboardSnapshot snapshot,
         bool isRefreshing,

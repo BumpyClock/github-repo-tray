@@ -32,7 +32,15 @@ public sealed class DashboardRefreshSessionFailureTests
 
             await fixture.RefreshAsync();
 
-            SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            if (phase is "initial")
+            {
+                SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            }
+            else
+            {
+                Assert.True(fixture.Session.State.IsAccountVerified);
+                Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
+            }
             Assert.Same(previous.Snapshot, fixture.Session.State.Snapshot);
             Assert.Equal("An unexpected refresh error occurred. Check GitHub CLI and try again.",
                 fixture.Session.State.Error);
@@ -71,7 +79,7 @@ public sealed class DashboardRefreshSessionFailureTests
             "first",
             Assert.Single(Assert.IsType<DashboardSnapshot>(
                 fixture.Session.State.Snapshot).Activity.Items).Id);
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.Equal(phase is not "initial", fixture.Session.State.IsAccountVerified);
         Assert.False(fixture.Session.State.IsRefreshing);
         Assert.False(fixture.Session.State.IsStopping);
         Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);

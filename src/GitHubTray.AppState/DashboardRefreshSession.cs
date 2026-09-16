@@ -302,7 +302,23 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             DashboardSnapshot? snapshot = null;
             string? error = null;
             Exception? unexpectedFault = null;
-            var confirmedDifferentAccount = false;
+            var verificationStatus = DashboardAccountVerificationStatus.Verifying;
+            var completeInitialVerification = hydrateFromCache;
+
+            void PublishVerified(GitHubUser user, DashboardSnapshot? cached)
+            {
+                verificationStatus = DashboardAccountVerificationStatus.Verified;
+                PublishVerifiedAccount(user, cached, generation, completion);
+            }
+
+            void PublishMismatch(GitHubUser? user, string message)
+            {
+                verificationStatus = user is null
+                    ? DashboardAccountVerificationStatus.Failed
+                    : DashboardAccountVerificationStatus.Verified;
+                PublishAccountMismatch(user, message, generation, completion);
+            }
+
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -312,13 +328,8 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                         request,
                         previous,
                         hydrated => PublishHydrated(hydrated, generation, completion),
-                        (user, cached) => PublishVerifiedAccount(
-                            user, cached, generation, completion),
-                        (user, message) =>
-                        {
-                            confirmedDifferentAccount = user is not null;
-                            PublishAccountMismatch(user, message, generation, completion);
-                        },
+                        PublishVerified,
+                        PublishMismatch,
                         reason is DashboardRefreshReason.Startup
                             ? ResolveStartupRefreshIntervalAsync
                             : null,
@@ -326,13 +337,8 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                     : await _service.RefreshAsync(
                         request,
                         previous,
-                        (user, cached) => PublishVerifiedAccount(
-                            user, cached, generation, completion),
-                        (user, message) =>
-                        {
-                            confirmedDifferentAccount = user is not null;
-                            PublishAccountMismatch(user, message, generation, completion);
-                        },
+                        PublishVerified,
+                        PublishMismatch,
                         cancellationToken).ConfigureAwait(false);
                 snapshot = FreezeSnapshot(result.Snapshot);
             }
@@ -359,7 +365,6 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                 {
                     hydrateFromCache = false;
                     _initialHydration.TrySetResult();
-                    _initialVerification.TrySetResult();
                 }
             }
 
@@ -399,7 +404,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                             false,
                             snapshot.User,
                             DashboardAccountVerificationStatus.Verified)
-                        : FailedState(error, runManualFollowUp, confirmedDifferentAccount);
+                        : FailedState(error, runManualFollowUp, verificationStatus);
                     stateChanged = true;
                 }
 
@@ -423,6 +428,11 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                     disposeRefreshCancellation = _clearTask is null;
                     _manualFollowUpRequested = false;
                 }
+            }
+
+            if (completeInitialVerification)
+            {
+                _initialVerification.TrySetResult();
             }
 
             if (stateChanged)
@@ -578,7 +588,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
     private DashboardSessionState FailedState(
         string? error,
         bool isRefreshing,
-        bool confirmedDifferentAccount)
+        DashboardAccountVerificationStatus verificationStatus)
     {
         return new(
             _state.Snapshot,
@@ -587,9 +597,9 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             isRefreshing,
             false,
             _state.Account,
-            confirmedDifferentAccount
-                ? DashboardAccountVerificationStatus.Verified
-                : DashboardAccountVerificationStatus.Failed);
+            verificationStatus is DashboardAccountVerificationStatus.Verifying
+                ? DashboardAccountVerificationStatus.Failed
+                : verificationStatus);
     }
 
     private async Task ClearCacheCoreAsync(

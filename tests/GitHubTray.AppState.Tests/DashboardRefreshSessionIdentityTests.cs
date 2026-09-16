@@ -211,7 +211,8 @@ public sealed class DashboardRefreshSessionIdentityTests
         }
         else
         {
-            SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            Assert.True(fixture.Session.State.IsAccountVerified);
+            Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
             Assert.Same(original, fixture.Session.State.Snapshot);
         }
         Assert.Equal(accountChanged
@@ -243,7 +244,7 @@ public sealed class DashboardRefreshSessionIdentityTests
     }
 
     [Fact]
-    public async Task FailedFinalIdentityWithoutCacheLeavesConfirmedInitialAccountUnverified()
+    public async Task FailedFinalIdentityWithoutCacheKeepsConfirmedInitialAccountVerified()
     {
         await using var fixture = new RefreshSessionFixture();
         var responses = RefreshResponses.Success(revision: "must-not-publish");
@@ -255,10 +256,41 @@ public sealed class DashboardRefreshSessionIdentityTests
 
         await fixture.RefreshAsync();
 
-        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.False(fixture.Session.State.IsRefreshing);
+        Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
         Assert.Null(fixture.Session.State.Snapshot);
         Assert.Equal("octocat", fixture.Session.State.Account!.Login);
         Assert.Equal("Final identity unavailable", fixture.Session.State.Error);
+    }
+
+    [Fact]
+    public async Task InitialVerificationFailureIsPublishedBeforeCompletion()
+    {
+        await using var fixture = new RefreshSessionFixture();
+        var gate = fixture.Gate();
+        var responses = RefreshResponses.Success();
+        responses.InitialUser = responses.InitialUser with
+        {
+            Gate = gate,
+            Failure = new GitHubException("Signed out")
+        };
+        fixture.Api.Use(responses);
+        var refresh = fixture.Session.RefreshAsync();
+        await gate.EnteredAsync();
+        var observedState = fixture.Session.InitialVerificationTask.ContinueWith(
+            _ => fixture.Session.State,
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            InlineQueueTaskScheduler.Instance);
+
+        gate.Release();
+
+        var state = await observedState.WaitAsync(RefreshSessionFixture.Timeout);
+        Assert.False(state.IsRefreshing);
+        Assert.False(state.IsAccountVerified);
+        Assert.Equal("Signed out", state.Error);
+        await refresh.WaitAsync(RefreshSessionFixture.Timeout);
     }
 
     [Fact]
@@ -300,5 +332,17 @@ public sealed class DashboardRefreshSessionIdentityTests
 
         SessionAssertions.Success(fixture.Session.State);
         Assert.Equal(8, fixture.Api.Requests.Length);
+    }
+
+    private sealed class InlineQueueTaskScheduler : TaskScheduler
+    {
+        public static InlineQueueTaskScheduler Instance { get; } = new();
+
+        protected override IEnumerable<Task> GetScheduledTasks() => [];
+
+        protected override void QueueTask(Task task) => TryExecuteTask(task);
+
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) =>
+            TryExecuteTask(task);
     }
 }

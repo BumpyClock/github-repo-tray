@@ -208,8 +208,10 @@ The dashboard cache lives under the app's user-local data folder in a
 partitioned by GitHub host and stable user ID and retain the login for display.
 An atomic `last-account.json` selector records the account last confirmed by the
 process, without credentials. On upgrade, if that selector is absent, the store
-chooses the most recently written compatible account record once and persists
-that choice; section success timestamps are not used as an account-activity signal.
+examines the most recently written owned account record once and persists it only
+when that record is reusable. If the newest record is malformed, incompatible,
+or expired, migration returns its explicit diagnostic without falling back to an
+older account record; section success timestamps are not used as an account-activity signal.
 An unreadable or incompatible selector produces a cache diagnostic rather than
 silently selecting another account.
 Each section has its own original successful-fetch timestamp and representation

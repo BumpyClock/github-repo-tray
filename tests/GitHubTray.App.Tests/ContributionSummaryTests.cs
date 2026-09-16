@@ -27,4 +27,13 @@ public sealed class ContributionSummaryTests
         model.UpdateCalendar(new ContributionCalendar(0, []));
         Assert.Equal("0 \u00b7 12 months", model.Summary);
     }
+
+    [Fact]
+    public void RefreshKeepsAnExistingFailureDiagnosticVisible()
+    {
+        Assert.True(DashboardSnapshotPresentation.ShouldShowContributionFeedback(
+            loading: true, hasDays: true, hasError: true));
+        Assert.False(DashboardSnapshotPresentation.ShouldShowContributionFeedback(
+            loading: true, hasDays: false, hasError: false));
+    }
 }
