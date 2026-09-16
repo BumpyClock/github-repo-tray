@@ -4,9 +4,22 @@ namespace GitHubTray_App.ViewModels;
 
 public static class DashboardSnapshotPresentation
 {
-    public static string AccountDescription(DashboardSnapshot snapshot, bool isRefreshing)
+    public static bool ShouldShowContributionFeedback(bool loading, bool hasDays, bool hasError) =>
+        hasError || !loading && !hasDays;
+
+    public static string AccountDescription(
+        DashboardSnapshot snapshot,
+        bool isRefreshing,
+        bool isVerified = true)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        if (!isVerified)
+        {
+            return isRefreshing
+                ? $"Saved github.com account: @{snapshot.User.Login}. Showing data saved on this device with its original timestamps while account verification continues."
+                : $"Saved github.com account: @{snapshot.User.Login}. Showing data saved on this device with its original timestamps; this account is not verified for the current process.";
+        }
+
         var showingCache =
             snapshot.Activity.Source == DashboardSectionSource.Cached ||
             snapshot.PullRequests.Source == DashboardSectionSource.Cached ||

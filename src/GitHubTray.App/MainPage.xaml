@@ -57,7 +57,7 @@
         </DataTemplate>
         <DataTemplate x:Key="PullRequestRowTemplate" x:DataType="vm:DashboardRow">
             <controls:PullRequestCard Data="{x:Bind PullRequest, Mode=OneWay}"
-                                      OpenChecksRequested="PullRequestCard_OpenChecksRequested" />
+                                      Loaded="PullRequestCard_Loaded" Unloaded="PullRequestCard_Unloaded" />
         </DataTemplate>
         <controls:PullRequestTemplateSelector x:Key="DashboardTemplateSelector"
                                               RowTemplate="{StaticResource DashboardRowTemplate}"
@@ -103,6 +103,7 @@
         <!-- Spacing lives on each notification so the row collapses to nothing when all are closed. -->
         <StackPanel Grid.Row="1" Margin="8,0">
             <InfoBar IsOpen="{x:Bind ViewModel.HasTrayError, Mode=OneWay}" IsClosable="False" Margin="0,0,0,8"
+                     Visibility="{x:Bind local:MainPage.Visible(ViewModel.HasTrayError), Mode=OneWay}"
                      Severity="Error" Title="Notification area unavailable"
                      Message="{x:Bind ViewModel.TrayError, Mode=OneWay}"
                      AutomationProperties.AutomationId="TrayErrorInfoBar">
@@ -112,21 +113,20 @@
                 </InfoBar.ActionButton>
             </InfoBar>
             <InfoBar IsOpen="{x:Bind ViewModel.HasRefreshError, Mode=OneWay}" IsClosable="False" Margin="0,0,0,8"
+                     Visibility="{x:Bind local:MainPage.Visible(ViewModel.HasRefreshError), Mode=OneWay}"
                      Severity="Warning" Title="Account check failed"
                      Message="{x:Bind ViewModel.RefreshError, Mode=OneWay}"
                      AutomationProperties.AutomationId="RefreshErrorInfoBar" />
             <InfoBar IsOpen="{x:Bind ViewModel.HasSettingsWarning, Mode=OneWay}" IsClosable="False" Margin="0,0,0,8"
+                     Visibility="{x:Bind local:MainPage.Visible(ViewModel.HasSettingsWarning), Mode=OneWay}"
                      Severity="Warning" Title="Settings need attention"
                      Message="{x:Bind ViewModel.SettingsWarning, Mode=OneWay}"
                      AutomationProperties.AutomationId="SettingsWarningInfoBar" />
             <InfoBar IsOpen="{x:Bind ViewModel.HasActionError, Mode=OneWay}" IsClosable="False" Margin="0,0,0,8"
+                     Visibility="{x:Bind local:MainPage.Visible(ViewModel.HasActionError), Mode=OneWay}"
                      Severity="Error" Title="Action unavailable"
                      Message="{x:Bind ViewModel.ActionError, Mode=OneWay}"
                      AutomationProperties.AutomationId="ActionErrorInfoBar" />
-            <TextBlock Text="Refreshing GitHub…" Margin="0,0,0,8" Style="{StaticResource CaptionTextBlockStyle}"
-                       Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsRefreshing), Mode=OneWay}"
-                       AutomationProperties.AutomationId="RefreshProgress"
-                       AutomationProperties.LiveSetting="Polite" />
         </StackPanel>
 
         <Grid Grid.Row="2" RowSpacing="0"
@@ -154,7 +154,7 @@
             </StackPanel>
             <SelectorBar x:Name="ModeSelector" Grid.Row="1" Margin="0,12,0,0" SelectionChanged="ModeSelector_SelectionChanged"
                          AutomationProperties.AutomationId="DashboardModes" AutomationProperties.Name="Dashboard section">
-                <SelectorBarItem Text="Activity" IsSelected="True" Tag="0"
+                <SelectorBarItem Text="Activity" Tag="0"
                                  AutomationProperties.AutomationId="ActivityTab" AutomationProperties.Name="Recent GitHub activity" />
                 <SelectorBarItem Text="My PRs" Tag="1"
                                  AutomationProperties.AutomationId="PullRequestsTab" AutomationProperties.Name="My authored pull requests" />
@@ -186,7 +186,7 @@
                      AutomationProperties.AutomationId="SectionErrorInfoBar" />
             <ListView x:Name="DashboardList" Grid.Row="4" Margin="0,4,0,0"
                       ItemsSource="{x:Bind ViewModel.SelectedSection.Items, Mode=OneWay, FallbackValue={x:Null}}"
-                      Visibility="{x:Bind local:MainPage.Visible(ViewModel.IsAccountVerified), Mode=OneWay}"
+                      Visibility="{x:Bind local:MainPage.Visible(ViewModel.HasDisplayableData), Mode=OneWay}"
                       SelectionMode="Single" IsItemClickEnabled="True" ItemClick="DashboardList_ItemClick"
                       ItemTemplateSelector="{StaticResource DashboardTemplateSelector}"
                       ContainerContentChanging="DashboardList_ContainerContentChanging"

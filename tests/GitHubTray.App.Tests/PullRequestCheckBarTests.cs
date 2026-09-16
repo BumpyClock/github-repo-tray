@@ -36,8 +36,13 @@ public sealed class PullRequestCheckBarTests
     {
         var widths = CheckBarLayout.Distribute([90, 1, 1], 12);
 
-        Assert.All(widths, width => Assert.True(width < CheckBarLayout.MinSegmentWidth * 2));
-        Assert.Equal(12 - 2 * CheckBarLayout.SegmentSpacing, widths.Sum());
+        Assert.Equal(3, widths.Length);
+        Assert.All(widths, width =>
+        {
+            Assert.InRange(width, 2, 3);
+            Assert.Equal(Math.Round(width), width);
+        });
+        Assert.Equal(8, widths.Sum());
     }
 
     [Theory]
@@ -45,7 +50,7 @@ public sealed class PullRequestCheckBarTests
     [InlineData(-40)]
     public void ABarWithNoRoomProducesNoWidthRatherThanNegativeOnes(double width)
     {
-        Assert.All(CheckBarLayout.Distribute([3, 1], width), value => Assert.Equal(0, value));
+        Assert.Equal([0d, 0d], CheckBarLayout.Distribute([3, 1], width));
         Assert.Empty(CheckBarLayout.Distribute([], 200));
     }
 
@@ -154,6 +159,7 @@ public sealed class PullRequestCheckBarTests
     {
         var vm = Present(Checks(CheckRollupState.Passed, CheckState.Passed, CheckState.Skipped));
 
+        Assert.Equal(["Skipped", "Passed"], vm.CheckGroups.Select(group => group.Title));
         Assert.All(vm.CheckGroups, group => Assert.True(group.IsExpanded));
     }
 

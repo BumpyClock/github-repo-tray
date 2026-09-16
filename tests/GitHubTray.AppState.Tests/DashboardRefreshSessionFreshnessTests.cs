@@ -62,6 +62,7 @@ public sealed class DashboardRefreshSessionFreshnessTests
         var snapshot = Assert.IsType<DashboardSnapshot>(fixture.Session.State.Snapshot);
         Assert.Equal("periodic-two", Assert.Single(snapshot.Activity.Items).Id);
         Assert.Equal("#42 Improve periodic-two", Assert.Single(snapshot.PullRequests.Items).Title);
+        Assert.Equal("#42 Improve periodic-two", Assert.Single(snapshot.ReviewRequests.Items).Title);
         Assert.Equal("Review requested", Assert.Single(snapshot.ReviewRequests.Items).Detail);
         Assert.Equal("octocat/first", Assert.Single(snapshot.Repositories.Items).Title);
         Assert.Equal(5, fixture.Api.Requests.Length - before);
@@ -198,7 +199,7 @@ public sealed class DashboardRefreshSessionFreshnessTests
         failedFinalIdentity.Release();
         await forcedInitialIdentity.EnteredAsync();
         Assert.True(fixture.Session.State.IsRefreshing);
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.True(fixture.Session.State.IsAccountVerified);
         Assert.Equal(6, fixture.Api.Requests.Length - before);
         forcedInitialIdentity.Release();
         await refresh.WaitAsync(RefreshSessionFixture.Timeout);
@@ -267,7 +268,9 @@ public sealed class DashboardRefreshSessionFreshnessTests
 
         await fixture.RefreshAsync(DashboardRefreshReason.Startup);
 
-        SessionAssertions.Unverified(fixture.Session.State, "octocat");
+        Assert.True(fixture.Session.State.IsAccountVerified);
+        Assert.Null(fixture.Session.State.Snapshot);
+        Assert.Equal("different-account", fixture.Session.State.Account!.Login);
         Assert.Contains("account changed during refresh", fixture.Session.State.Error);
         Assert.Equal(
             [ApiRoute.InitialUser, ApiRoute.FinalUser],

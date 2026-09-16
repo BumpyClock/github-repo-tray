@@ -335,12 +335,14 @@ internal sealed class MemoryDashboardCacheStore : IDashboardCacheStore
 {
     private readonly object sync = new();
     private readonly Dictionary<(string Host, long UserId), DashboardCacheRecord> records = [];
+    private DashboardCacheAccount? selectedAccount;
 
     internal int ReadCount { get; private set; }
     internal int WriteCount { get; private set; }
     internal int ClearCount { get; private set; }
     internal DashboardCacheRecord? LastWrite { get; private set; }
     internal RequestGate? ClearGate { get; set; }
+    internal bool FailClear { get; set; }
     internal int RecordCount
     {
         get
@@ -349,6 +351,28 @@ internal sealed class MemoryDashboardCacheStore : IDashboardCacheStore
             {
                 return records.Count;
             }
+        }
+    }
+
+    public Task<DashboardCacheReadResult> ReadLastUsedAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (sync)
+        {
+            ReadCount++;
+            DashboardCacheRecord? record = null;
+            if (selectedAccount is not null)
+            {
+                records.TryGetValue(
+                    (selectedAccount.Host.ToLowerInvariant(), selectedAccount.UserId),
+                    out record);
+            }
+            return Task.FromResult(new DashboardCacheReadResult(
+                record,
+                new(record is null ? DashboardCacheDiagnosticKind.Missing : DashboardCacheDiagnosticKind.Loaded,
+                    "Fixture last-used cache read.")));
         }
     }
 
@@ -394,6 +418,19 @@ internal sealed class MemoryDashboardCacheStore : IDashboardCacheStore
             new(DashboardCacheDiagnosticKind.Written, "Fixture cache write.")));
     }
 
+    public Task<DashboardCacheWriteResult> SelectAccountAsync(
+        DashboardCacheAccount account,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (sync)
+        {
+            selectedAccount = account;
+        }
+        return Task.FromResult(new DashboardCacheWriteResult(
+            new(DashboardCacheDiagnosticKind.Written, "Fixture account selected.")));
+    }
+
     public async Task<DashboardCacheClearResult> ClearAsync(
         CancellationToken cancellationToken = default)
     {
@@ -406,8 +443,16 @@ internal sealed class MemoryDashboardCacheStore : IDashboardCacheStore
         int deleted;
         lock (sync)
         {
+            if (FailClear)
+            {
+                return new(
+                    0,
+                    records.Count,
+                    new(DashboardCacheDiagnosticKind.ClearFailed, "Fixture cache deletion failed."));
+            }
             deleted = records.Count;
             records.Clear();
+            selectedAccount = null;
         }
         return new(
             deleted,
@@ -431,6 +476,7 @@ internal static class SessionAssertions
         Assert.Equal(revision, Assert.Single(snapshot.Activity.Items).Id);
         Assert.Equal($"{login}/{revision}", Assert.Single(snapshot.Activity.Items).Repository);
         Assert.Equal($"#42 Improve {revision}", Assert.Single(snapshot.PullRequests.Items).Title);
+        Assert.Equal($"#42 Improve {revision}", Assert.Single(snapshot.ReviewRequests.Items).Title);
         Assert.Equal("Review requested", Assert.Single(snapshot.ReviewRequests.Items).Detail);
         Assert.Equal($"{login}/{revision}", Assert.Single(snapshot.Repositories.Items).Title);
         foreach (var section in Sections(snapshot))
@@ -455,7 +501,6 @@ internal static class SessionAssertions
 
     internal static void Unverified(DashboardSessionState state, string? lastKnownLogin)
     {
-        Assert.Null(state.Snapshot);
         Assert.False(state.IsAccountVerified);
         Assert.False(state.IsRefreshing);
         Assert.False(state.IsStopping);

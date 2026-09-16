@@ -29,10 +29,9 @@ public partial class App : Application
         var startup = DashboardStartup.StartIfPrimary(_instance.IsCurrent,
             static settingsCancellation =>
             {
-                var settingsFile = Path.Combine(
-                    ApplicationData.Current.LocalFolder.Path, "settings.json");
-                var cacheDirectory = Path.Combine(
-                    ApplicationData.Current.LocalFolder.Path, "dashboard-cache");
+                var localFolderPath = ApplicationData.Current.LocalFolder.Path;
+                var settingsFile = Path.Combine(localFolderPath, "settings.json");
+                var cacheDirectory = Path.Combine(localFolderPath, "dashboard-cache");
                 var settingsStore = new SettingsStore(settingsFile);
                 var settingsTask = settingsStore.LoadAsync(settingsCancellation);
                 var service = new DashboardService(

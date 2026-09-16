@@ -115,6 +115,13 @@ internal sealed class DashboardStartup : IAsyncDisposable
                 projectState(hydrated);
                 projected = hydrated;
             }
+            await Session.InitialVerificationTask;
+            var verified = Session.State;
+            if (!ReferenceEquals(projected, verified))
+            {
+                projectState(verified);
+                projected = verified;
+            }
             await RefreshTask;
         }
         finally

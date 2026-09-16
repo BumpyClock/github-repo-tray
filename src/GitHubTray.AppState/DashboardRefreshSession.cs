@@ -16,6 +16,8 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
     private readonly Task<TimeSpan>? _startupRefreshInterval;
     private readonly TaskCompletionSource _initialHydration =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _initialVerification =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private DashboardSessionState _state = new(null, null, null, false, false);
     private DashboardSnapshot? _recoverySnapshot;
     private Task? _refreshTask;
@@ -57,10 +59,19 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Completes after the initial identity request and cache lookup have either published retained data
-    /// or become unavailable. Publication always precedes completion.
+    /// Completes after the first local cache lookup has published saved data or an explicit miss.
+    /// No network identity request is required for completion.
     /// </summary>
     public Task InitialHydrationTask => _initialHydration.Task;
+
+    /// <summary>
+    /// Completes after the initial network identity request has either confirmed an account or failed.
+    /// Any account-change publication precedes completion.
+    /// </summary>
+    public Task InitialVerificationTask => _initialVerification.Task;
+
+    /// <summary>Raised after an accepted state transition has been published.</summary>
+    public event Action? StateChanged;
 
     /// <summary>Updates the configured cadence used to judge startup Activity and PR freshness.</summary>
     public void SetRefreshInterval(TimeSpan refreshInterval)
@@ -140,7 +151,14 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             hydrateFromCache = !_hasStartedInitialRefresh;
             _hasStartedInitialRefresh = true;
             generation = _generation;
-            _state = new(_state.Snapshot, _state.LastKnownLogin, _state.Error, true, false);
+            _state = new(
+                _state.Snapshot,
+                _state.LastKnownLogin,
+                _state.Error,
+                true,
+                false,
+                _state.Account,
+                _state.VerificationStatus);
         }
 
         _ = RefreshCoreAsync(
@@ -152,6 +170,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             refreshCancellation,
             cancellationToken,
             completion);
+        StateChanged?.Invoke();
         return completion.Task;
     }
 
@@ -193,9 +212,17 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             _forceNextRefresh = true;
             _hasStartedInitialRefresh = true;
             _initialHydration.TrySetResult();
+            _initialVerification.TrySetResult();
             _recoverySnapshot = null;
             _manualFollowUpRequested = false;
-            _state = new(_state.Snapshot, _state.LastKnownLogin, null, false, false);
+            _state = new(
+                _state.Snapshot,
+                _state.LastKnownLogin,
+                null,
+                false,
+                false,
+                _state.Account,
+                _state.VerificationStatus);
             refreshTask = _refreshTask ?? Task.CompletedTask;
             refreshCancellation = _refreshCancellation;
         }
@@ -205,6 +232,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             refreshTask,
             refreshCancellation,
             completion);
+        StateChanged?.Invoke();
         return completion.Task;
     }
 
@@ -234,7 +262,14 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
 
             completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _shutdownTask = completion.Task;
-            _state = new(null, _state.LastKnownLogin, null, false, true);
+            _state = new(
+                null,
+                _state.LastKnownLogin,
+                null,
+                false,
+                true,
+                _state.Account,
+                DashboardAccountVerificationStatus.Failed);
             _recoverySnapshot = null;
             _manualFollowUpRequested = false;
             _forceNextRefresh = false;
@@ -244,6 +279,7 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         }
 
         _ = ShutdownCoreAsync(refreshTask, clearTask, completion);
+        StateChanged?.Invoke();
         return completion.Task;
     }
 
@@ -266,27 +302,43 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             DashboardSnapshot? snapshot = null;
             string? error = null;
             Exception? unexpectedFault = null;
-            var completingInitialHydration = hydrateFromCache;
+            var verificationStatus = DashboardAccountVerificationStatus.Verifying;
+            var completeInitialVerification = hydrateFromCache;
+
+            void PublishVerified(GitHubUser user, DashboardSnapshot? cached)
+            {
+                verificationStatus = DashboardAccountVerificationStatus.Verified;
+                PublishVerifiedAccount(user, cached, generation, completion);
+            }
+
+            void PublishMismatch(GitHubUser? user, string message)
+            {
+                verificationStatus = user is null
+                    ? DashboardAccountVerificationStatus.Failed
+                    : DashboardAccountVerificationStatus.Verified;
+                PublishAccountMismatch(user, message, generation, completion);
+            }
+
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var request = new DashboardRefreshRequest(reason, refreshInterval);
-                result = hydrateFromCache && reason is DashboardRefreshReason.Startup
+                result = hydrateFromCache
                     ? await _service.RefreshWithHydrationAsync(
                         request,
                         previous,
                         hydrated => PublishHydrated(hydrated, generation, completion),
-                        ResolveStartupRefreshIntervalAsync,
-                        cancellationToken).ConfigureAwait(false)
-                    : hydrateFromCache
-                    ? await _service.RefreshWithHydrationAsync(
-                        request,
-                        previous,
-                        hydrated => PublishHydrated(hydrated, generation, completion),
+                        PublishVerified,
+                        PublishMismatch,
+                        reason is DashboardRefreshReason.Startup
+                            ? ResolveStartupRefreshIntervalAsync
+                            : null,
                         cancellationToken).ConfigureAwait(false)
                     : await _service.RefreshAsync(
                         request,
                         previous,
+                        PublishVerified,
+                        PublishMismatch,
                         cancellationToken).ConfigureAwait(false);
                 snapshot = FreezeSnapshot(result.Snapshot);
             }
@@ -309,15 +361,16 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             }
             finally
             {
-                hydrateFromCache = false;
-                if (completingInitialHydration)
+                if (hydrateFromCache)
                 {
+                    hydrateFromCache = false;
                     _initialHydration.TrySetResult();
                 }
             }
 
             var runManualFollowUp = false;
             var disposeRefreshCancellation = false;
+            var stateChanged = false;
             lock (_gate)
             {
                 if (!_state.IsStopping && generation == _generation)
@@ -341,14 +394,18 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                         refreshInterval = _refreshInterval;
                         _activeReason = reason;
                         _manualFollowUpRequested = false;
-                        _state = snapshot is not null
-                            ? new(snapshot, snapshot.User.Login, null, true, false)
-                            : new(null, _state.LastKnownLogin, error, true, false);
                     }
-                    else
-                    {
-                        _state = new(snapshot, snapshot?.User.Login ?? _state.LastKnownLogin, error, false, false);
-                    }
+                    _state = snapshot is not null
+                        ? new(
+                            snapshot,
+                            snapshot.User.Login,
+                            null,
+                            runManualFollowUp,
+                            false,
+                            snapshot.User,
+                            DashboardAccountVerificationStatus.Verified)
+                        : FailedState(error, runManualFollowUp, verificationStatus);
+                    stateChanged = true;
                 }
 
                 if (!runManualFollowUp)
@@ -371,6 +428,16 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
                     disposeRefreshCancellation = _clearTask is null;
                     _manualFollowUpRequested = false;
                 }
+            }
+
+            if (completeInitialVerification)
+            {
+                _initialVerification.TrySetResult();
+            }
+
+            if (stateChanged)
+            {
+                StateChanged?.Invoke();
             }
 
             if (!runManualFollowUp)
@@ -410,16 +477,129 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         TaskCompletionSource completion)
     {
         var frozen = snapshot is null ? null : FreezeSnapshot(snapshot);
+        var stateChanged = false;
         lock (_gate)
         {
             if (frozen is not null && !_state.IsStopping && generation == _generation &&
                 ReferenceEquals(_refreshTask, completion.Task))
             {
                 _recoverySnapshot = frozen;
-                _state = new(frozen, frozen.User.Login, null, true, false);
+                _state = new(
+                    frozen,
+                    frozen.User.Login,
+                    null,
+                    true,
+                    false,
+                    frozen.User,
+                    DashboardAccountVerificationStatus.Verifying);
+                stateChanged = true;
             }
             _initialHydration.TrySetResult();
         }
+        if (stateChanged)
+        {
+            StateChanged?.Invoke();
+        }
+    }
+
+    private void PublishVerifiedAccount(
+        GitHubUser user,
+        DashboardSnapshot? verifiedSnapshot,
+        long generation,
+        TaskCompletionSource completion)
+    {
+        var frozen = verifiedSnapshot is null ? null : FreezeSnapshot(verifiedSnapshot);
+        var stateChanged = false;
+        lock (_gate)
+        {
+            if (!_state.IsStopping && generation == _generation &&
+                ReferenceEquals(_refreshTask, completion.Task))
+            {
+                DashboardSnapshot? display = frozen ?? _state.Snapshot;
+                if (display is not null && AccountsMatch(display.User, user))
+                {
+                    if (!Equals(display.User, user))
+                    {
+                        display = display with { User = user };
+                    }
+                    // A rendered snapshot can outlive clearing; identity alone cannot make it reusable.
+                    if (frozen is not null)
+                    {
+                        _recoverySnapshot = display;
+                    }
+                }
+                else if (display is not null)
+                {
+                    display = null;
+                    _recoverySnapshot = null;
+                }
+
+                _state = new(
+                    display,
+                    user.Login,
+                    null,
+                    true,
+                    false,
+                    user,
+                    DashboardAccountVerificationStatus.Verified);
+                stateChanged = true;
+            }
+            _initialVerification.TrySetResult();
+        }
+        if (stateChanged)
+        {
+            StateChanged?.Invoke();
+        }
+    }
+
+    private void PublishAccountMismatch(
+        GitHubUser? confirmedAccount,
+        string message,
+        long generation,
+        TaskCompletionSource completion)
+    {
+        var stateChanged = false;
+        lock (_gate)
+        {
+            if (!_state.IsStopping && generation == _generation &&
+                ReferenceEquals(_refreshTask, completion.Task))
+            {
+                _recoverySnapshot = null;
+                _state = new(
+                    null,
+                    confirmedAccount?.Login ?? _state.LastKnownLogin,
+                    message,
+                    true,
+                    false,
+                    confirmedAccount ?? _state.Account,
+                    confirmedAccount is null
+                        ? DashboardAccountVerificationStatus.Failed
+                        : DashboardAccountVerificationStatus.Verified);
+                stateChanged = true;
+            }
+            _initialVerification.TrySetResult();
+        }
+        if (stateChanged)
+        {
+            StateChanged?.Invoke();
+        }
+    }
+
+    private DashboardSessionState FailedState(
+        string? error,
+        bool isRefreshing,
+        DashboardAccountVerificationStatus verificationStatus)
+    {
+        return new(
+            _state.Snapshot,
+            _state.Account?.Login ?? _state.LastKnownLogin,
+            error,
+            isRefreshing,
+            false,
+            _state.Account,
+            verificationStatus is DashboardAccountVerificationStatus.Verifying
+                ? DashboardAccountVerificationStatus.Failed
+                : verificationStatus);
     }
 
     private async Task ClearCacheCoreAsync(
@@ -501,17 +681,30 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
             refreshCancellation?.Dispose();
         }
 
+        var stateChanged = false;
         lock (_gate)
         {
             if (!_state.IsStopping && generation == _generation)
             {
-                _state = new(_state.Snapshot, _state.LastKnownLogin, null, false, false);
+                _state = new(
+                    _state.Snapshot,
+                    _state.LastKnownLogin,
+                    null,
+                    false,
+                    false,
+                    _state.Account,
+                    _state.VerificationStatus);
+                stateChanged = true;
             }
             completion.SetResult(result);
             if (ReferenceEquals(_clearTask, completion.Task))
             {
                 _clearTask = null;
             }
+        }
+        if (stateChanged)
+        {
+            StateChanged?.Invoke();
         }
     }
 
@@ -605,6 +798,11 @@ public sealed class DashboardRefreshSession : IAsyncDisposable
         snapshot.Repositories.Error is not null ||
         snapshot.Contributions.Error is not null ||
         snapshot.Copilot.Error is not null;
+
+    private static bool AccountsMatch(GitHubUser expected, GitHubUser actual) =>
+        string.Equals(expected.Host, actual.Host, StringComparison.OrdinalIgnoreCase) &&
+        expected.Id == actual.Id &&
+        string.Equals(expected.Login, actual.Login, StringComparison.OrdinalIgnoreCase);
 
     private static void ValidateRefreshInterval(TimeSpan refreshInterval)
     {

@@ -53,6 +53,7 @@ public sealed class DashboardRefreshSessionSectionTests
         await fixture.RefreshAsync();
         var originalState = fixture.Session.State;
         var original = SessionAssertions.Success(originalState);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var responses = RefreshResponses.Success(revision: "next");
         responses.Activity = responses.Activity with { Failure = new GitHubException("Offline") };
         responses.ReviewRequests = new ApiReply("""{"errors":[{"message":"Partial results"}],"data":null}""");
@@ -79,7 +80,7 @@ public sealed class DashboardRefreshSessionSectionTests
         foreach (var section in new[] { snapshot.PullRequests, snapshot.Repositories })
         {
             Assert.Empty(section.Items);
-            Assert.NotNull(section.UpdatedAt);
+            Assert.Equal(fixture.Clock.GetUtcNow(), section.UpdatedAt);
             Assert.Null(section.Error);
             Assert.False(section.IsStale);
         }
@@ -91,7 +92,7 @@ public sealed class DashboardRefreshSessionSectionTests
             Assert.Equal(0, day.Count);
             Assert.Equal(ContributionLevel.None, day.Level);
         });
-        Assert.NotNull(snapshot.Contributions.UpdatedAt);
+        Assert.Equal(fixture.Clock.GetUtcNow(), snapshot.Contributions.UpdatedAt);
         Assert.Null(snapshot.Contributions.Error);
         Assert.False(snapshot.Contributions.IsStale);
         SessionAssertions.Success(originalState);
@@ -104,6 +105,7 @@ public sealed class DashboardRefreshSessionSectionTests
         await using var fixture = new RefreshSessionFixture();
         await fixture.RefreshAsync();
         var original = SessionAssertions.Success(fixture.Session.State);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
         var responses = RefreshResponses.Success(revision: "new");
         responses.Contributions = new ApiReply("{}");
         fixture.Api.Use(responses);
@@ -120,7 +122,7 @@ public sealed class DashboardRefreshSessionSectionTests
         {
             Assert.Null(section.Error);
             Assert.False(section.IsStale);
-            Assert.NotNull(section.UpdatedAt);
+            Assert.Equal(fixture.Clock.GetUtcNow(), section.UpdatedAt);
         });
         Assert.True(snapshot.Contributions.IsStale);
         Assert.Contains("unexpected contribution calendar", snapshot.Contributions.Error);

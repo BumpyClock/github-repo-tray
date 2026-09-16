@@ -19,12 +19,12 @@ public sealed partial class MainWindow : Window
     private const string LightIconFileName = "AppIcon.ico";
     private const string DarkIconFileName = "AppIconDark.ico";
     private const string HighContrastIconFileName = "AppIconHighContrast.ico";
-    private readonly MainPage _page;
+    private MainPage? _page;
     private readonly AccessibilitySettings _accessibility = new();
     private readonly UISettings _systemColors = new();
     private readonly DispatcherQueueTimer _dismissTimer;
+    private readonly PanelPerformanceLog? _performanceLog;
     private TrayIcon? _trayIcon;
-    private bool _hasAcrylicBackdrop;
     private bool _isQuitting;
     private bool _isActivated;
 
@@ -32,8 +32,6 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         ViewModel = new DashboardViewModel(startup, DispatcherQueue);
-        _page = new MainPage(ViewModel, this);
-        PageHost.Child = _page;
         var presenter = AppWindow.Presenter.As<OverlappedPresenter>();
         presenter.SetBorderAndTitleBar(false, false);
         presenter.IsResizable = false;
@@ -44,7 +42,6 @@ public sealed partial class MainWindow : Window
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 33, ref cornerPreference, sizeof(int));
         var borderColor = -2; // DWMWA_COLOR_NONE: keep the native frame borderless.
         NativeMethods.DwmSetWindowAttribute(WindowHandle, 34, ref borderColor, sizeof(int));
-        ConfigureBackdrop();
         AppWindow.IsShownInSwitchers = false;
         RootGrid.ActualThemeChanged += RootGrid_ActualThemeChanged;
         // High contrast toggles do not raise ActualThemeChanged, and
@@ -58,6 +55,7 @@ public sealed partial class MainWindow : Window
         _dismissTimer.Tick += DismissTimer_Tick;
         AppWindow.Closing += AppWindow_Closing;
         Activated += MainWindow_Activated;
+        _performanceLog = PanelPerformanceLog.TryCreate(DispatcherQueue);
         RetryTray();
     }
 
@@ -93,39 +91,91 @@ public sealed partial class MainWindow : Window
             if (DesktopAcrylicController.IsSupported())
             {
                 SystemBackdrop = new DesktopAcrylicBackdrop();
-                _hasAcrylicBackdrop = true;
             }
         }
         catch (Exception exception) when (exception is COMException or NotSupportedException)
         {
             Debug.WriteLine($"Acrylic initialization failed ({exception.HResult:X8}); using the opaque theme surface.");
             SystemBackdrop = null;
-            _hasAcrylicBackdrop = false;
         }
 
         // DesktopAcrylicBackdrop owns system transparency and high-contrast changes.
         // AccessibilitySettings.HighContrastChanged requires a UWP window and fails in WinUI 3.
-        FallbackSurface.Visibility = _hasAcrylicBackdrop
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        FallbackSurface.Visibility = SystemBackdrop is null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private MainPage EnsurePanelContent()
+    {
+        if (_page is not null)
+        {
+            return _page;
+        }
+
+        try
+        {
+            ViewModel.SetPanelVisible(true);
+            _page = new MainPage(ViewModel, this);
+            PageHost.Child = _page;
+            ConfigureBackdrop();
+            return _page;
+        }
+        catch
+        {
+            ReleasePanelContent();
+            throw;
+        }
+    }
+
+    private void ReleasePanelContent()
+    {
+        try
+        {
+            _page?.ReleaseForHide();
+        }
+        finally
+        {
+            PageHost.Child = null;
+            _page = null;
+            try
+            {
+                ViewModel.SetPanelVisible(false);
+            }
+            finally
+            {
+                SystemBackdrop = null;
+                FallbackSurface.Visibility = Visibility.Visible;
+            }
+        }
     }
 
     public void ShowPanel(bool showSettings = false)
     {
+        var showStarted = _performanceLog is null ? 0 : Stopwatch.GetTimestamp();
         if (_isQuitting)
         {
             return;
         }
 
+        var measureShow = _performanceLog?.BeginShow(showStarted, AppWindow.IsVisible) == true;
         _dismissTimer.Stop();
         // Avoid moving an already visible panel between monitors on reactivation.
         if (!AppWindow.IsVisible)
         {
             PanelPositioner.Position(AppWindow, WindowHandle, _trayIcon);
-            _page.SetPanelVisible(true);
         }
+        var page = EnsurePanelContent();
 
+        if (measureShow)
+        {
+            _performanceLog!.PreparationComplete();
+        }
         AppWindow.Show();
+        if (measureShow)
+        {
+            _performanceLog!.Shown();
+        }
         NativeMethods.SetForegroundWindow(WindowHandle);
         Activate();
         try
@@ -143,10 +193,20 @@ public sealed partial class MainWindow : Window
         }
         if (showSettings)
         {
-            _page.OpenSettings();
+            page.OpenSettings();
         }
 
-        DispatcherQueue.TryEnqueue(_page.FocusPanel);
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_isQuitting && AppWindow.IsVisible)
+            {
+                _page?.FocusPanel();
+            }
+        });
+        if (measureShow)
+        {
+            _performanceLog!.SynchronousShowComplete();
+        }
     }
 
     public void HidePanel()
@@ -164,8 +224,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _page.SetPanelVisible(false);
-        AppWindow.Hide();
+        try
+        {
+            ReleasePanelContent();
+        }
+        finally
+        {
+            AppWindow.Hide();
+            _performanceLog?.Hidden();
+        }
     }
 
     public void RetryTray()
@@ -307,6 +374,7 @@ public sealed partial class MainWindow : Window
         }
 
         _isQuitting = true;
+        _performanceLog?.Dispose();
         _dismissTimer.Stop();
         _dismissTimer.Tick -= DismissTimer_Tick;
         RootGrid.ActualThemeChanged -= RootGrid_ActualThemeChanged;
@@ -315,7 +383,14 @@ public sealed partial class MainWindow : Window
         _trayIcon = null;
         try
         {
-            await ViewModel.ShutdownAsync();
+            try
+            {
+                ReleasePanelContent();
+            }
+            finally
+            {
+                await ViewModel.ShutdownAsync();
+            }
         }
         finally
         {

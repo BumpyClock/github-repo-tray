@@ -20,6 +20,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(EnablePanelPerformanceDiagnostics)' == 'true'">
+    <DefineConstants>$(DefineConstants);PANEL_PERFORMANCE</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Content Include="Assets\SplashScreen.scale-200.png" />
     <Content Include="Assets\LockScreenLogo.scale-200.png" />

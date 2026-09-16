@@ -56,13 +56,44 @@ public sealed class DashboardService
         DashboardRefreshRequest request,
         DashboardSnapshot? previous = null,
         CancellationToken cancellationToken = default) =>
-        RefreshCoreAsync(request, previous, false, null, null, cancellationToken);
+        RefreshCoreAsync(request, previous, null, null, null, null, cancellationToken);
 
-    public Task<DashboardSnapshot> RefreshWithHydrationAsync(
+    public Task<DashboardRefreshResult> RefreshAsync(
+        DashboardRefreshRequest request,
+        DashboardSnapshot? previous,
+        Action<GitHubUser, DashboardSnapshot?> publishVerifiedAccount,
+        Action<GitHubUser?, string> publishAccountMismatch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(publishVerifiedAccount);
+        ArgumentNullException.ThrowIfNull(publishAccountMismatch);
+        return RefreshCoreAsync(
+            request,
+            previous,
+            null,
+            publishVerifiedAccount,
+            publishAccountMismatch,
+            null,
+            cancellationToken);
+    }
+
+    public async Task<DashboardSnapshot> RefreshWithHydrationAsync(
         DashboardSnapshot? previous,
         Action<DashboardSnapshot?> publishHydrated,
-        CancellationToken cancellationToken = default) =>
-        RefreshHydratedSnapshotAsync(previous, publishHydrated, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(publishHydrated);
+        var result = await RefreshCoreAsync(
+            new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
+            previous,
+            publishHydrated,
+            null,
+            null,
+            null,
+            cancellationToken).ConfigureAwait(false);
+        return result.Snapshot;
+    }
 
     public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
         DashboardRefreshRequest request,
@@ -72,7 +103,8 @@ public sealed class DashboardService
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(publishHydrated);
-        return RefreshCoreAsync(request, previous, true, publishHydrated, null, cancellationToken);
+        return RefreshCoreAsync(
+            request, previous, publishHydrated, null, null, null, cancellationToken);
     }
 
     public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
@@ -88,8 +120,32 @@ public sealed class DashboardService
         return RefreshCoreAsync(
             request,
             previous,
-            true,
             publishHydrated,
+            null,
+            null,
+            resolveStartupRefreshInterval,
+            cancellationToken);
+    }
+
+    public Task<DashboardRefreshResult> RefreshWithHydrationAsync(
+        DashboardRefreshRequest request,
+        DashboardSnapshot? previous,
+        Action<DashboardSnapshot?> publishHydrated,
+        Action<GitHubUser, DashboardSnapshot?> publishVerifiedAccount,
+        Action<GitHubUser?, string> publishAccountMismatch,
+        Func<CancellationToken, Task<TimeSpan>>? resolveStartupRefreshInterval,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(publishHydrated);
+        ArgumentNullException.ThrowIfNull(publishVerifiedAccount);
+        ArgumentNullException.ThrowIfNull(publishAccountMismatch);
+        return RefreshCoreAsync(
+            request,
+            previous,
+            publishHydrated,
+            publishVerifiedAccount,
+            publishAccountMismatch,
             resolveStartupRefreshInterval,
             cancellationToken);
     }
@@ -100,116 +156,161 @@ public sealed class DashboardService
         CancellationToken cancellationToken)
     {
         var result = await RefreshCoreAsync(
-            request, previous, false, null, null, cancellationToken).ConfigureAwait(false);
-        return result.Snapshot;
-    }
-
-    private async Task<DashboardSnapshot> RefreshHydratedSnapshotAsync(
-        DashboardSnapshot? previous,
-        Action<DashboardSnapshot?> publishHydrated,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(publishHydrated);
-        var result = await RefreshCoreAsync(
-            new DashboardRefreshRequest(DashboardRefreshReason.Manual, TimeSpan.Zero),
-            previous,
-            true,
-            publishHydrated,
-            null,
-            cancellationToken).ConfigureAwait(false);
+            request, previous, null, null, null, null, cancellationToken).ConfigureAwait(false);
         return result.Snapshot;
     }
 
     private async Task<DashboardRefreshResult> RefreshCoreAsync(
         DashboardRefreshRequest request,
         DashboardSnapshot? previous,
-        bool hydrateFromCache,
         Action<DashboardSnapshot?>? publishHydrated,
+        Action<GitHubUser, DashboardSnapshot?>? publishVerifiedAccount,
+        Action<GitHubUser?, string>? publishAccountMismatch,
         Func<CancellationToken, Task<TimeSpan>>? resolveStartupRefreshInterval,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.Validate();
-        var user = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow();
+
+        if (publishHydrated is not null)
+        {
+            DashboardSnapshot? hydrated = null;
+            if (_cacheStore is not null)
+            {
+                var cached = await _cacheStore.ReadLastUsedAsync(now, cancellationToken)
+                    .ConfigureAwait(false);
+                Report(cached.Diagnostic);
+                if (cached.Record is { } record)
+                {
+                    hydrated = FromCache(record);
+                }
+            }
+
+            previous = MergeHydration(previous, hydrated);
+            if (previous is not null)
+            {
+                previous = RetainEligible(previous, _timeProvider.GetUtcNow());
+            }
+            publishHydrated(HasSuccessfulSection(previous) ? previous : null);
+        }
+
+        var user = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
+        publishVerifiedAccount?.Invoke(user, null);
 
         // Never reuse private data from another gh account after an account switch.
         if (previous is not null && !AccountsMatch(previous.User, user))
         {
             previous = null;
         }
-        else if (previous is not null)
+
+        if (publishHydrated is not null && previous is null && _cacheStore is not null)
         {
-            previous = RetainEligible(previous with { User = user }, now);
+            var cached = await _cacheStore.ReadAsync(
+                Account(user), _timeProvider.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+            Report(cached.Diagnostic);
+            if (cached.Record is { } record)
+            {
+                previous = RetainEligible(
+                    FromCache(record) with { User = user },
+                    _timeProvider.GetUtcNow());
+                if (HasSuccessfulSection(previous))
+                {
+                    publishVerifiedAccount?.Invoke(user, previous);
+                }
+            }
         }
 
-        if (hydrateFromCache)
+        if (_cacheStore is not null)
         {
-            DashboardSnapshot? hydrated = null;
-            if (_cacheStore is not null)
-            {
-                var cached = await _cacheStore.ReadAsync(Account(user), now, cancellationToken)
-                    .ConfigureAwait(false);
-                Report(cached.Diagnostic);
-                if (cached.Record is { } record &&
-                    string.Equals(record.Account.Host, user.Host, StringComparison.OrdinalIgnoreCase) &&
-                    record.Account.UserId == user.Id)
-                {
-                    hydrated = FromCache(record, user);
-                }
-                else if (cached.Record is not null)
-                {
-                    Report(new(DashboardCacheDiagnosticKind.Incompatible,
-                        "Dashboard cache did not belong to the verified account and was ignored."));
-                }
-            }
+            var selected = await _cacheStore.SelectAccountAsync(Account(user), cancellationToken)
+                .ConfigureAwait(false);
+            Report(selected.Diagnostic);
+        }
 
-            previous = MergeRecovery(previous, hydrated, user);
-            publishHydrated!(HasSuccessfulSection(previous) ? previous : null);
-            if (request.Reason is DashboardRefreshReason.Startup &&
-                resolveStartupRefreshInterval is not null)
+        if (publishHydrated is not null &&
+            request.Reason is DashboardRefreshReason.Startup &&
+            resolveStartupRefreshInterval is not null)
+        {
+            request = request with
             {
-                request = request with
-                {
-                    RefreshInterval = await resolveStartupRefreshInterval(cancellationToken)
-                        .ConfigureAwait(false)
-                };
-                request.Validate();
-            }
+                RefreshInterval = await resolveStartupRefreshInterval(cancellationToken)
+                    .ConfigureAwait(false)
+            };
+            request.Validate();
         }
 
         now = _timeProvider.GetUtcNow();
+        if (previous is not null)
+        {
+            previous = RetainEligible(previous with { User = user }, now);
+        }
         var reusedSections = DashboardSectionKind.None;
 
-        var activity = CanReuse(request, DashboardSectionKind.Activity, previous?.Activity.UpdatedAt, now)
+        Task<DashboardSection> activity = CanReuse(
+            request, DashboardSectionKind.Activity, previous?.Activity.UpdatedAt, now)
             ? Reuse(previous!.Activity, DashboardSectionKind.Activity, ref reusedSections)
             : LoadActivityAsync(user.Login, previous?.Activity, cancellationToken);
-        var authored = CanReuse(request, DashboardSectionKind.PullRequests, previous?.PullRequests.UpdatedAt, now)
+        Task<DashboardSection> authored = CanReuse(
+            request, DashboardSectionKind.PullRequests, previous?.PullRequests.UpdatedAt, now)
             ? Reuse(previous!.PullRequests, DashboardSectionKind.PullRequests, ref reusedSections)
             : LoadPullRequestsAsync(user.Login, false, previous?.PullRequests, cancellationToken);
-        var reviews = CanReuse(request, DashboardSectionKind.ReviewRequests, previous?.ReviewRequests.UpdatedAt, now)
+        Task<DashboardSection> reviews = CanReuse(
+            request, DashboardSectionKind.ReviewRequests, previous?.ReviewRequests.UpdatedAt, now)
             ? Reuse(previous!.ReviewRequests, DashboardSectionKind.ReviewRequests, ref reusedSections)
             : LoadPullRequestsAsync(user.Login, true, previous?.ReviewRequests, cancellationToken);
-        var repositories = CanReuse(request, DashboardSectionKind.Repositories, previous?.Repositories.UpdatedAt, now)
+        Task<DashboardSection> repositories = CanReuse(
+            request, DashboardSectionKind.Repositories, previous?.Repositories.UpdatedAt, now)
             ? Reuse(previous!.Repositories, DashboardSectionKind.Repositories, ref reusedSections)
             : LoadSectionAsync(
                 $"user/repos?sort=pushed&direction=desc&per_page={ItemLimit}&affiliation=owner,collaborator,organization_member",
                 ParseRepositories, previous?.Repositories, cancellationToken);
-        var contributions = previous?.Contributions.Calendar is not null &&
-                            CanReuse(request, DashboardSectionKind.Contributions,
-                                previous.Contributions.UpdatedAt, now)
+        Task<ContributionSection> contributions =
+            previous?.Contributions.Calendar is not null &&
+            CanReuse(request, DashboardSectionKind.Contributions,
+                previous.Contributions.UpdatedAt, now)
             ? Reuse(previous.Contributions, DashboardSectionKind.Contributions, ref reusedSections)
             : LoadContributionsAsync(user.Login, previous?.Contributions, cancellationToken);
-        var copilot = previous?.Copilot.Usage is not null &&
-                      CanReuse(request, DashboardSectionKind.Copilot, previous.Copilot.UpdatedAt, now)
+        Task<CopilotUsageSection> copilot =
+            previous?.Copilot.Usage is not null &&
+            CanReuse(request, DashboardSectionKind.Copilot, previous.Copilot.UpdatedAt, now)
             ? Reuse(previous.Copilot, DashboardSectionKind.Copilot, ref reusedSections)
             : LoadCopilotUsageAsync(user.Login, previous?.Copilot, cancellationToken);
-        await Task.WhenAll(activity, authored, reviews, repositories, contributions, copilot).ConfigureAwait(false);
+
+        if (publishAccountMismatch is not null)
+        {
+            var mismatchPublished = 0;
+            void PublishMismatch(GitHubAccountChangedException exception)
+            {
+                if (Interlocked.Exchange(ref mismatchPublished, 1) == 0)
+                {
+                    publishAccountMismatch(null, exception.Message);
+                }
+            }
+
+            activity = ObserveAccountMismatchAsync(activity, PublishMismatch);
+            authored = ObserveAccountMismatchAsync(authored, PublishMismatch);
+            reviews = ObserveAccountMismatchAsync(reviews, PublishMismatch);
+            repositories = ObserveAccountMismatchAsync(repositories, PublishMismatch);
+            contributions = ObserveAccountMismatchAsync(contributions, PublishMismatch);
+            copilot = ObserveAccountMismatchAsync(copilot, PublishMismatch);
+        }
+
+        await Task.WhenAll(activity, authored, reviews, repositories, contributions, copilot)
+            .ConfigureAwait(false);
 
         var verifiedUser = await ReadAsync("user", ParseUser, cancellationToken).ConfigureAwait(false);
         if (!AccountsMatch(user, verifiedUser))
         {
-            throw new GitHubAccountChangedException("The GitHub account changed during refresh. No new data was displayed. Refresh again to load the current account.");
+            const string message = "The GitHub account changed during refresh. No new data was displayed. Refresh again to load the current account.";
+            publishAccountMismatch?.Invoke(verifiedUser, message);
+            if (_cacheStore is not null)
+            {
+                var selected = await _cacheStore.SelectAccountAsync(
+                    Account(verifiedUser), cancellationToken).ConfigureAwait(false);
+                Report(selected.Diagnostic);
+            }
+            throw new GitHubAccountChangedException(message);
         }
 
         var snapshot = new DashboardSnapshot(user, await activity, await authored, await reviews, await repositories)
@@ -235,6 +336,21 @@ public sealed class DashboardService
             }
         }
         return new DashboardRefreshResult(snapshot, reusedSections);
+    }
+
+    private static async Task<T> ObserveAccountMismatchAsync<T>(
+        Task<T> task,
+        Action<GitHubAccountChangedException> publishMismatch)
+    {
+        try
+        {
+            return await task.ConfigureAwait(false);
+        }
+        catch (GitHubAccountChangedException exception)
+        {
+            publishMismatch(exception);
+            throw;
+        }
     }
 
     private static Task<T> Reuse<T>(
@@ -287,22 +403,14 @@ public sealed class DashboardService
         }
         catch (GitHubException exception) when (exception is not GitHubAccountChangedException)
         {
-            return new(previous?.Usage, previous?.UpdatedAt, exception.Message)
-            {
-                Source = previous?.UpdatedAt is not null
-                    ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
-            };
+            return Failed(previous, exception.Message);
         }
         catch (Exception exception) when (exception is JsonException or FormatException or
                                          InvalidOperationException or KeyNotFoundException or
                                          OverflowException or ArgumentOutOfRangeException)
         {
-            return new(previous?.Usage, previous?.UpdatedAt,
-                "GitHub returned an unexpected Copilot usage response. Refresh again or update GitHub Tray if this persists.")
-            {
-                Source = previous?.UpdatedAt is not null
-                    ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
-            };
+            return Failed(previous,
+                "GitHub returned an unexpected Copilot usage response. Refresh again or update GitHub Tray if this persists.");
         }
     }
 
@@ -430,6 +538,7 @@ public sealed class DashboardService
     {
         if (diagnostic.Kind is not DashboardCacheDiagnosticKind.Missing
             and not DashboardCacheDiagnosticKind.Loaded
+            and not DashboardCacheDiagnosticKind.Migrated
             and not DashboardCacheDiagnosticKind.Written)
         {
             _reportCacheDiagnostic?.Invoke(diagnostic);
@@ -453,6 +562,13 @@ public sealed class DashboardService
 
     private static ContributionSection Failed(ContributionSection? previous, string error) =>
         new(previous?.Calendar, previous?.UpdatedAt, error)
+        {
+            Source = previous?.UpdatedAt is not null
+                ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
+        };
+
+    private static CopilotUsageSection Failed(CopilotUsageSection? previous, string error) =>
+        new(previous?.Usage, previous?.UpdatedAt, error)
         {
             Source = previous?.UpdatedAt is not null
                 ? DashboardSectionSource.Retained : DashboardSectionSource.Failed
@@ -486,22 +602,21 @@ public sealed class DashboardService
             ? section
             : new(null, null, null) { Source = DashboardSectionSource.Missing };
 
-    private static DashboardSnapshot? MergeRecovery(
+    private static DashboardSnapshot? MergeHydration(
         DashboardSnapshot? inMemory,
-        DashboardSnapshot? hydrated,
-        GitHubUser verifiedUser)
+        DashboardSnapshot? hydrated)
     {
         if (inMemory is null)
         {
             return hydrated;
         }
-        if (hydrated is null)
+        if (hydrated is null || !AccountsMatch(inMemory.User, hydrated.User))
         {
-            return inMemory with { User = verifiedUser };
+            return inMemory;
         }
 
         return new DashboardSnapshot(
-            verifiedUser,
+            inMemory.User,
             Newer(inMemory.Activity, hydrated.Activity),
             Newer(inMemory.PullRequests, hydrated.PullRequests),
             Newer(inMemory.ReviewRequests, hydrated.ReviewRequests),
@@ -543,9 +658,17 @@ public sealed class DashboardService
          snapshot.Contributions is { Calendar: not null, UpdatedAt: not null } ||
          snapshot.Copilot is { Usage: not null, UpdatedAt: not null });
 
-    private static DashboardSnapshot FromCache(DashboardCacheRecord record, GitHubUser verifiedUser) =>
+    private static DashboardSnapshot FromCache(DashboardCacheRecord record)
+    {
+        var cachedUser = new GitHubUser(
+            record.Account.Host,
+            record.Account.UserId,
+            record.Account.Login,
+            record.Account.Login,
+            GitHubUrl($"https://github.com/{record.Account.Login}"));
+        return
         new(
-            verifiedUser,
+            cachedUser,
             FromCache(record.Activity),
             FromCache(record.PullRequests),
             FromCache(record.ReviewRequests),
@@ -564,6 +687,7 @@ public sealed class DashboardService
                 }
                 : new(null, null, null) { Source = DashboardSectionSource.Missing }
         };
+    }
 
     private static DashboardSection FromCache(DashboardListCacheSection? section) =>
         section is { } cached

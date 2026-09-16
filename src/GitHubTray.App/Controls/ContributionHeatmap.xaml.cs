@@ -30,8 +30,8 @@ public sealed partial class ContributionHeatmap : UserControl
     {
         InitializeComponent();
         PlotOverlay.Margin = new Thickness(0, ContributionViewport.TopInset, 0, 0);
-        LostFocus += (_, _) => CloseSelectionTooltip();
-        PlotOverlay.SizeChanged += (_, _) => UpdatePlotClip();
+        LostFocus += Heatmap_LostFocus;
+        PlotOverlay.SizeChanged += PlotOverlay_SizeChanged;
     }
 
     public ContributionHeatmapViewModel ViewModel { get; } = new();
@@ -48,9 +48,10 @@ public sealed partial class ContributionHeatmap : UserControl
         set => SetValue(StatusProperty, value);
     }
 
-    public static Visibility Visible(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
     public static Visibility FeedbackVisibility(bool loading, bool hasDays, bool hasError) =>
-        loading || !hasDays || hasError ? Visibility.Visible : Visibility.Collapsed;
+        DashboardSnapshotPresentation.ShouldShowContributionFeedback(loading, hasDays, hasError)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     public bool HasError
     {
@@ -62,6 +63,10 @@ public sealed partial class ContributionHeatmap : UserControl
     {
         ((ContributionHeatmap)sender).UpdateCalendar((ContributionCalendar?)args.NewValue);
     }
+
+    private void Heatmap_LostFocus(object sender, RoutedEventArgs args) => CloseSelectionTooltip();
+
+    private void PlotOverlay_SizeChanged(object sender, SizeChangedEventArgs args) => UpdatePlotClip();
 
     private void UpdateCalendar(ContributionCalendar? calendar)
     {
@@ -76,7 +81,7 @@ public sealed partial class ContributionHeatmap : UserControl
     protected override void OnKeyDown(KeyRoutedEventArgs args)
     {
         base.OnKeyDown(args);
-        if (XamlRoot is not null && !ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this))
+        if (_released || XamlRoot is not null && !ReferenceEquals(FocusManager.GetFocusedElement(XamlRoot), this))
         {
             return;
         }
@@ -117,6 +122,7 @@ public sealed partial class ContributionHeatmap : UserControl
 
     private void CalendarGrid_Tapped(object sender, TappedRoutedEventArgs args)
     {
+        if (_released) return;
         var source = args.OriginalSource as DependencyObject;
         while (source is not null && source != CalendarGrid && source is not ContributionDayCell)
         {

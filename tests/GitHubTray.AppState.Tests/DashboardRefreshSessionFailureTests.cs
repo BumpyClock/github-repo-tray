@@ -32,7 +32,16 @@ public sealed class DashboardRefreshSessionFailureTests
 
             await fixture.RefreshAsync();
 
-            SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            if (phase is "initial")
+            {
+                SessionAssertions.Unverified(fixture.Session.State, "octocat");
+            }
+            else
+            {
+                Assert.True(fixture.Session.State.IsAccountVerified);
+                Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);
+            }
+            Assert.Same(previous.Snapshot, fixture.Session.State.Snapshot);
             Assert.Equal("An unexpected refresh error occurred. Check GitHub CLI and try again.",
                 fixture.Session.State.Error);
             var expectedRequests = 8 + RequestsThrough(phase);
@@ -53,7 +62,7 @@ public sealed class DashboardRefreshSessionFailureTests
     [InlineData("section", true)]
     [InlineData("final", false)]
     [InlineData("final", true)]
-    public async Task UnexpectedFaultsPropagateClearPublishedDataAndLeaveFutureRefreshUsable(string phase, bool faultAsTask)
+    public async Task UnexpectedFaultsPropagateRetainPublishedDataAndLeaveFutureRefreshUsable(string phase, bool faultAsTask)
     {
         await using var fixture = new RefreshSessionFixture();
         await fixture.RefreshAsync();
@@ -66,8 +75,11 @@ public sealed class DashboardRefreshSessionFailureTests
         var observed = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.RefreshAsync());
 
         Assert.Same(failure, observed);
-        Assert.Null(fixture.Session.State.Snapshot);
-        Assert.False(fixture.Session.State.IsAccountVerified);
+        Assert.Equal(
+            "first",
+            Assert.Single(Assert.IsType<DashboardSnapshot>(
+                fixture.Session.State.Snapshot).Activity.Items).Id);
+        Assert.Equal(phase is not "initial", fixture.Session.State.IsAccountVerified);
         Assert.False(fixture.Session.State.IsRefreshing);
         Assert.False(fixture.Session.State.IsStopping);
         Assert.Equal("octocat", fixture.Session.State.LastKnownLogin);

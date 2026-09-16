@@ -40,22 +40,22 @@ milestone. The app currently uses the official WinUI template's placeholder icon
 | `GitHubTray.AppState.Tests` | Production refresh-session and Core behavior with fixture transport responses; no WinUI runtime, live authentication, or network dependency. |
 | `GitHubTray.App.Tests` | Source-linked production heatmap view-model tests without a WinUI runtime or live data. |
 
-The App-owned refresh session distinguishes three kinds of dashboard data:
+The App-owned refresh session separates saved data, verification, and publication:
 
-- **Retained dashboard:** account-scoped data kept privately for recovery after a
-  failed refresh; its presence does not make it eligible for display.
-- **Verified cached dashboard:** durable per-section successes published only
-  after the initial identity request matches their GitHub.com host and stable
-  account ID. Cached sections retain their original timestamps and provenance.
-- **Published dashboard:** data currently eligible for display under a verified
-  account; individual sections may be visibly stale.
+- **Saved dashboard:** durable account-scoped per-section successes eligible for
+  cache-first display with their original timestamps and provenance.
+- **Verification state:** independently records whether the displayed account is
+  still being checked, verified for this process, or failed verification.
+- **Published dashboard:** data currently eligible for display. It may be saved
+  and explicitly unverified, or verified with individually stale sections.
 
 The session exposes one immutable current state and shares one in-flight refresh
 across startup, timer, toolbar, keyboard, and tray requests. Entry points carry
 `Startup`, `Periodic`, or `Manual` through the session into Core. WinUI projects
 state into bindings on the UI thread; it does not own a second recovery snapshot.
-An identity failure removes rows and the calendar from the published state and
-the projection, while the session retains recovery data privately.
+Displayability and account trust are separate: an identity or network failure
+keeps saved rows, contributions, repositories, PR checks, and Copilot usage
+readable while marking the account unverified and exposing the verification error.
 
 Core evaluates same-account successful-section timestamps after the initial
 identity operation. Startup can reuse Activity and both PR lists while they are
@@ -66,20 +66,22 @@ requires a fetch. Manual refresh bypasses every window.
 
 The durable JSON store and an optional in-memory recovery snapshot feed the same
 Core hydration policy, with no second TTL implementation or identity probe.
-After the initial `/user` operation verifies the cache's host and stable account
-ID, matching retained sections may be published while live section requests and
-the final identity check continue. A failed final check or account/viewer mismatch
-subsequently hides that data rather than allowing it to remain under an obsolete
-account. Reuse returns the original section object, timestamp, successful-empty
-state, and failure provenance.
+On process startup, Core resolves the store's durable last-used account and
+publishes its eligible sections before awaiting `/user`. Verification failure
+leaves that snapshot published but unverified. A confirmed different REST account
+or account/viewer mismatch clears the prior snapshot before pending section work
+can publish. If startup confirms a different account, only that account's own
+eligible cache can replace the previous account's saved content. Reuse returns the original section object, timestamp,
+successful-empty state, and failure provenance.
 
-Core resolves `/user` before requesting account-specific data and verifies the account
-again before publishing the completed snapshot. A detected account change,
+Core verifies `/user` before requesting new account-specific data and verifies the account
+again before publishing the completed live snapshot. A detected account change,
 including a mismatched GraphQL viewer, rejects the entire refresh rather than
 mixing data under the original account label. Individual section
 failures keep that section's last successful items and timestamp, clearly marked
 as stale. A different account invalidates the previous snapshot's cached sections.
-An identity lookup failure is an error, not a successful empty dashboard.
+An identity lookup failure is an error, not a successful refresh; saved data may
+remain visible only with failed verification state.
 
 Native timers remain in the App, outside the refresh session. On shutdown the
 App stops those timers and cancels settings work; the session stops accepting
@@ -88,8 +90,14 @@ The App also waits for initialization and settings work before closing.
 While hidden, the panel stops only its local timestamp/countdown clock and catches
 up on reveal. Scheduled API refresh continues at the configured interval.
 Dashboard projection also waits while hidden: the latest session state is applied
-before reveal, including any identity failure that must remove old-account data.
-Unchanged section metadata and item identities retain existing presentation rows.
+before reveal, including verification failures that retain saved data and proven
+account changes that remove old-account data.
+The hidden panel releases its page and presentation rows while retaining the
+native window shell, tray, settings, and refresh session. Reopening rebuilds the
+page from that session rather than refetching data. This intentionally exchanges
+reopen work for a smaller retained presentation graph; it does not promise that
+the allocator immediately returns all released memory to Windows. While visible,
+unchanged section metadata and item identities retain existing presentation rows.
 Already deeply immutable session snapshots are shared instead of being recopied;
 mutable inputs are still frozen at the publication boundary.
 The repeating timer is not restarted when a refresh completes, so Activity and
@@ -104,12 +112,12 @@ Window initialization adopts that exact session and refresh task, including an
 already-completed task, rather than issuing a second startup refresh. Settings
 loading runs independently of the initial data projection. The panel opens
 immediately with loading feedback; early fetching overlaps setup without delaying
-the first show or weakening the account-verification boundary. The initial
-identity request also owns startup hydration: after it verifies the host/account,
-the session can publish matching retained sections before delayed live requests
-finish. The persisted refresh interval loads concurrently and is applied before
-startup Activity/PR freshness selection, without delaying that verified cached
-publication. Cache misses and identity failures do not add another identity probe.
+the first show. Local cache hydration completes independently of the initial
+identity request, so saved data can reach WinUI while `/user` is still blocked.
+Account-state changes are projected during every refresh, so confirmed account
+changes remove old content before delayed section requests finish. The persisted refresh interval
+loads concurrently and is applied before startup Activity/PR freshness selection.
+Cache misses and identity failures do not add another identity probe.
 One settings-load task supplies both startup freshness and the window's settings
 projection. Startup owns its cancellation and observes it during failed window
 construction or shutdown.
@@ -123,10 +131,19 @@ refreshes do not renew timestamps. Atomic replacement and a single store gate
 protect the last valid record from failed, cancelled, or concurrent writes.
 Malformed, incompatible, expired, and inaccessible records become explicit cache
 miss diagnostics without preventing live data from loading.
+The store also owns an atomic `last-account.json` selector. Confirmed identity,
+not section freshness, updates it. Existing installations without the selector
+migrate once by examining the newest owned account-record file by filesystem write
+time. A reusable newest record is persisted as the selection; a malformed,
+incompatible, or expired newest record returns its explicit diagnostic without
+falling back to an older record. Later section timestamps cannot change a
+successful selection.
+Malformed, incompatible, or inaccessible selectors produce explicit diagnostics;
+they do not trigger migration to a different saved account.
 
 The settings surface exposes **Clear cached data** for every cached account.
 Clearing advances both store and refresh-session invalidation generations, removes
-only cache-owned account records and interrupted temporary writes, clears private
+only cache-owned account records, the selector, and interrupted temporary writes, clears private
 recovery/freshness input, and forces the next accepted refresh to fetch all six
 sections. The current published snapshot may remain rendered but is not passed
 back to Core as reusable state. A pre-clear read, write, hydrated publication, or
@@ -145,8 +162,10 @@ The refresh interval and contribution cell-size preset remain in the settings
 file. A malformed settings file produces a visible warning; it is replaced only
 when the user explicitly saves a valid setting. Cache records can contain private
 dashboard metadata and Copilot quota details, but never credentials,
-authorization headers, or raw authentication errors. The initial identity
-request is mandatory, so retained data is not an offline cold-start mode.
+authorization headers, or raw authentication errors. The product intentionally
+allows those saved private surfaces to appear before network verification and to
+remain readable when verification fails; trust labels and errors must never imply
+that verification or refresh succeeded.
 
 ## GitHub contract
 
@@ -249,8 +268,8 @@ total, week boundaries, daily dates/counts, and contribution intensity levels.
 Omitting `from` and `to` uses GitHub's default last-year interval. The graph labels
 the actual returned date range, retains partial first/last weeks, and leaves
 out-of-range cells blank. It never derives contribution counts from events.
-The authenticated GraphQL viewer must match the REST account before its calendar
-is displayed. GraphQL errors and malformed calendars are failures even when
+The authenticated GraphQL viewer must match the REST account before a newly
+fetched calendar is published as verified. GraphQL errors and malformed calendars are failures even when
 HTTP succeeds; a failed refresh may retain only that same account's last
 successful calendar, visibly marked stale.
 
@@ -261,9 +280,8 @@ Refresh defaults to five minutes and is configurable from one to sixty minutes.
 Errors do not trigger an immediate retry loop. A manual refresh always retries
 all sections; automatic retries follow the section freshness policy and preserve
 an eligible prior success's original timestamp and error. Eligible per-section
-successes are durable across restarts, but remain hidden until the initial online
-identity verification succeeds. Browser links are restricted to HTTPS GitHub.com
-URLs.
+successes are durable across restarts and may be shown immediately as saved,
+unverified data. Browser links are restricted to HTTPS GitHub.com URLs.
 
 A normal authenticated full refresh has eight operations: initial identity, six
 section operations, and final identity. With all non-cadence sections fresh, a
@@ -280,6 +298,8 @@ latest returned day; an unavailable calendar clears selection. The native contro
 synchronizes the outline after any cell rebuild, even when the accessible value
 is unchanged. Changed values raise UI Automation value-property notifications;
 only changed user selections request a polite live-region announcement.
+Day cells reuse one localized description for their automation name and hover
+tooltip.
 Returning to the present reuses cell geometry when viewport width, DPI, week
 count, and preset are unchanged, while still restoring selection and scroll
 position. Replacing cells or reactivating the graph invalidates that geometry.

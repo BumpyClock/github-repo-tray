@@ -64,37 +64,23 @@ public sealed class PullRequestCardViewModel : ObservableObject
         IsDraft = State == PullRequestState.Open && details.IsDraft;
         Branches = $"{details.HeadRefName} → {details.BaseRefName}";
         ReviewDecision = details.ReviewDecision;
-        ReviewDecisionText = details.ReviewDecision switch
+        (ReviewDecisionText, ReviewDecisionGlyph, ReviewDecisionTone) = details.ReviewDecision switch
         {
-            "APPROVED" => "Approved",
-            "CHANGES_REQUESTED" => "Changes requested",
-            "REVIEW_REQUIRED" => "Review required",
-            null or "" => "",
-            _ => "Review status unknown"
-        };
-        ReviewDecisionGlyph = details.ReviewDecision switch
-        {
-            "APPROVED" => "\uE73E",
-            "CHANGES_REQUESTED" => "\uE7BA",
-            _ => "\uE8F2"
-        };
-        ReviewDecisionTone = details.ReviewDecision switch
-        {
-            "APPROVED" => StatusTone.Success,
-            "CHANGES_REQUESTED" => StatusTone.Failure,
-            "REVIEW_REQUIRED" => StatusTone.Progress,
-            _ => StatusTone.Neutral
+            "APPROVED" => ("Approved", "\uE73E", StatusTone.Success),
+            "CHANGES_REQUESTED" => ("Changes requested", "\uE7BA", StatusTone.Failure),
+            "REVIEW_REQUIRED" => ("Review required", "\uE8F2", StatusTone.Progress),
+            null or "" => ("", "\uE8F2", StatusTone.Neutral),
+            _ => ("Review status unknown", "\uE8F2", StatusTone.Neutral)
         };
         CommentCount = details.CommentCount;
         CommentSummary = $"{details.CommentCount} {(details.CommentCount == 1 ? "comment" : "comments")}";
 
         var labels = details.Labels.IsDefault ? ImmutableArray<PullRequestLabel>.Empty : details.Labels;
         LabelCount = details.LabelCount;
-        var shownLabels = labels.Take(MaxLabelChips).ToArray();
-        AdditionalLabelCount = Math.Max(0, LabelCount - shownLabels.Length);
-        var chips = shownLabels
+        var chips = labels.Take(MaxLabelChips)
             .Select(label => new PullRequestLabelChip(label.Name, label.Color, label.Name))
             .ToList();
+        AdditionalLabelCount = Math.Max(0, LabelCount - chips.Count);
         if (AdditionalLabelCount > 0)
             chips.Add(new PullRequestLabelChip($"+{AdditionalLabelCount}", null,
                 $"{AdditionalLabelCount} more {(AdditionalLabelCount == 1 ? "label" : "labels")}"));
@@ -566,7 +552,6 @@ public sealed class PullRequestCardViewModel : ObservableObject
     }
 }
 
-/// <summary>One label chip, or the trailing overflow chip when labels did not fit.</summary>
 /// <summary>
 /// One outcome's worth of detail rows. Groups let the flyout lead with the checks that
 /// need attention and fold away the ones that do not, without hiding anything.
@@ -585,7 +570,9 @@ public sealed class PullRequestCheckGroup(
     public string AccessibleName => $"{Title}, {Count} {(Count == 1 ? "check" : "checks")}";
 }
 
-public sealed class PullRequestLabelChip(string text, string? color, string toolTip){
+/// <summary>One label chip, or the trailing overflow chip when labels did not fit.</summary>
+public sealed class PullRequestLabelChip(string text, string? color, string toolTip)
+{
     public string Text { get; } = text;
 
     /// <summary>GitHub's six-digit label color, or null for the overflow chip.</summary>

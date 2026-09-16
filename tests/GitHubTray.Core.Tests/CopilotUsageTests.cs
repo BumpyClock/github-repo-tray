@@ -68,10 +68,13 @@ public sealed class CopilotUsageTests
         var premium = Premium(response);
         premium.Remove("percent_remaining");
         premium["has_quota"] = false;
-        Assert.Equal(CopilotQuotaAvailability.NotIncluded, Parse(response).Quotas[0].Availability);
+        var notIncluded = Parse(response).Quotas[0];
+        Assert.Equal(CopilotQuotaAvailability.NotIncluded, notIncluded.Availability);
+        Assert.Null(notIncluded.PercentRemaining);
         premium["unlimited"] = true;
-        Assert.Equal(CopilotQuotaAvailability.Unlimited, Parse(response).Quotas[0].Availability);
-        Assert.Null(Parse(response).Quotas[0].PercentRemaining);
+        var unlimited = Parse(response).Quotas[0];
+        Assert.Equal(CopilotQuotaAvailability.Unlimited, unlimited.Availability);
+        Assert.Null(unlimited.PercentRemaining);
     }
 
     [Fact]
@@ -93,14 +96,31 @@ public sealed class CopilotUsageTests
     public void FreePlanCanExposeLimitedChatAndCompletionsWithoutPremium()
     {
         var response = CopilotTestData.Response();
-        response["quota_snapshots"]!.AsObject().Remove("premium_interactions");
-        response["quota_snapshots"]!["chat"] = new JsonObject
+        response["copilot_plan"] = "free";
+        response["token_based_billing"] = false;
+        var quotas = response["quota_snapshots"]!.AsObject();
+        quotas.Remove("premium_interactions");
+        quotas["chat"] = new JsonObject
         {
             ["unlimited"] = false, ["percent_remaining"] = 50
         };
+        quotas["completions"] = new JsonObject
+        {
+            ["unlimited"] = false, ["percent_remaining"] = 25
+        };
         var usage = Parse(response);
-        Assert.Equal(CopilotQuotaKind.Chat, usage.Quotas[0].Kind);
-        Assert.Equal(50, usage.Quotas[0].PercentRemaining);
+        Assert.Equal("free", usage.Plan);
+        Assert.Equal(
+            [CopilotQuotaKind.Chat, CopilotQuotaKind.Completions],
+            usage.Quotas.Select(quota => quota.Kind));
+        Assert.Equal(
+            new double?[] { 50, 25 },
+            usage.Quotas.Select(quota => quota.PercentRemaining));
+        Assert.All(usage.Quotas, quota =>
+        {
+            Assert.Equal(CopilotQuotaAvailability.Limited, quota.Availability);
+            Assert.False(quota.UsesAiCredits);
+        });
     }
 
     [Theory]

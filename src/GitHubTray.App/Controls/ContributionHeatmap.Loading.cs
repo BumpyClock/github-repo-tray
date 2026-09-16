@@ -21,8 +21,10 @@ public sealed partial class ContributionHeatmap
     private readonly List<Border> _skeletonCells = [];
     private Storyboard? _shimmer;
     private int _shimmerFirstVisibleWeek;
-    private bool _panelVisible = true;
+    // A hidden page is retired, never made visible again.
+    private bool _released;
     private bool _plotInvalidated = true;
+    private bool _motionSettingsSubscribed;
 
     public bool IsLoading
     {
@@ -39,7 +41,7 @@ public sealed partial class ContributionHeatmap
     private static void OnLoadingChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var control = (ContributionHeatmap)sender;
-        if (control.CalendarGrid is null)
+        if (control._released || control.CalendarGrid is null)
         {
             return;
         }
@@ -56,7 +58,7 @@ public sealed partial class ContributionHeatmap
     private static void OnActiveChanged(DependencyObject sender, DependencyPropertyChangedEventArgs args)
     {
         var control = (ContributionHeatmap)sender;
-        if (control.CalendarGrid is not null)
+        if (!control._released && control.CalendarGrid is not null)
         {
             // Preferences collapse the graph. Its scroll extent must be settled
             // again on activation even if it returns to the same dimensions.
@@ -70,47 +72,73 @@ public sealed partial class ContributionHeatmap
         }
     }
 
-    public void SetPanelVisible(bool visible)
+    internal void ReleaseForHide()
     {
-        _panelVisible = visible;
-        if (!visible)
+        if (_released) return;
+        _released = true;
+        DetachMotionSettings();
+        CloseSelectionTooltip();
+        if (_keyboardTooltip is not null)
         {
-            ReleasePlotVisuals();
+            ToolTipService.SetToolTip(SelectionOutline, null);
+            _keyboardTooltip = null;
         }
-        else
-        {
-            EnsurePlotCurrent();
-        }
+        ReleasePlotVisuals();
+        Calendar = null;
+        Bindings.StopTracking();
+        Loaded -= Heatmap_Loaded;
+        Unloaded -= Heatmap_Unloaded;
+        LostFocus -= Heatmap_LostFocus;
+        PlotOverlay.SizeChanged -= PlotOverlay_SizeChanged;
+        PlotScroll.SizeChanged -= PlotScroll_SizeChanged;
+        PlotScroll.ViewChanged -= PlotScroll_ViewChanged;
+        CalendarGrid.Tapped -= CalendarGrid_Tapped;
+        PlotOverlay.Clip = null;
+        DataContext = null;
     }
 
     private void Heatmap_Loaded(object sender, RoutedEventArgs args)
     {
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+        if (_released) return;
+        if (!_motionSettingsSubscribed)
         {
-            _uiSettings.AnimationsEnabledChanged += MotionSettingsChanged;
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            {
+                _uiSettings.AnimationsEnabledChanged += MotionSettingsChanged;
+            }
+            _uiSettings.ColorValuesChanged += MotionSettingsChanged;
+            _motionSettingsSubscribed = true;
         }
-        _uiSettings.ColorValuesChanged += MotionSettingsChanged;
         EnsurePlotCurrent();
     }
 
     private void Heatmap_Unloaded(object sender, RoutedEventArgs args)
     {
         CloseSelectionTooltip();
+        DetachMotionSettings();
+        StopShimmer();
+        _appliedViewport = null;
+    }
+
+    private void DetachMotionSettings()
+    {
+        if (!_motionSettingsSubscribed) return;
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
         {
             _uiSettings.AnimationsEnabledChanged -= MotionSettingsChanged;
         }
         _uiSettings.ColorValuesChanged -= MotionSettingsChanged;
-        StopShimmer();
-        _appliedViewport = null;
+        _motionSettingsSubscribed = false;
     }
 
-    private void MotionSettingsChanged(UISettings sender, object args) =>
-        DispatcherQueue.TryEnqueue(UpdateShimmer);
+    private void MotionSettingsChanged(UISettings sender, object args)
+    {
+        if (!_released) DispatcherQueue.TryEnqueue(UpdateShimmer);
+    }
 
-    // DashboardViewModel publishes the latest hidden snapshot immediately before this
-    // control is made visible. Setters mark the plot dirty until that reveal callback.
-    private bool CanRealizePlot => IsLoaded && _panelVisible && IsActive;
+    // The page is created from the latest session state on reveal. Setters mark the
+    // plot dirty until Loaded, or until Preferences stops collapsing the graph.
+    private bool CanRealizePlot => !_released && IsLoaded && IsActive;
 
     private bool TryRebuildPlot()
     {
@@ -153,7 +181,6 @@ public sealed partial class ContributionHeatmap
         }
 
         CloseSelectionTooltip();
-        _pendingAnchor ??= CaptureViewport();
         StopShimmer();
         _skeletonCells.Clear();
         CalendarGrid.Children.Clear();
@@ -221,7 +248,7 @@ public sealed partial class ContributionHeatmap
 
     private void UpdateShimmer()
     {
-        if (!IsLoaded || !_panelVisible || !IsActive || !IsLoading || ViewModel.HasDays
+        if (!CanRealizePlot || !IsLoading || ViewModel.HasDays
             || _skeletonCells.Count == 0 || !_uiSettings.AnimationsEnabled || _accessibilitySettings.HighContrast)
         {
             StopShimmer();
@@ -263,6 +290,7 @@ public sealed partial class ContributionHeatmap
             return;
         }
         _shimmer.Stop();
+        _shimmer.Children.Clear();
         _shimmer = null;
         foreach (var cell in _skeletonCells)
         {

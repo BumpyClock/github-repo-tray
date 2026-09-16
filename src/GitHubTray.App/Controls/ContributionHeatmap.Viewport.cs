@@ -43,7 +43,7 @@ public sealed partial class ContributionHeatmap
 
     private void ApplyViewport()
     {
-        if (_layingOut || !IsLoaded || !IsActive || PlotScroll.ViewportWidth <= 0 || _plotWeekCount == 0)
+        if (_layingOut || !CanRealizePlot || PlotScroll.ViewportWidth <= 0 || _plotWeekCount == 0)
         {
             return;
         }
@@ -98,6 +98,7 @@ public sealed partial class ContributionHeatmap
 
     private void UpdatePlotClip()
     {
+        if (_released) return;
         // Overlay bounds can change without changing the cell geometry.
         if (PlotOverlay.Clip is not RectangleGeometry clip)
         {
@@ -127,6 +128,7 @@ public sealed partial class ContributionHeatmap
 
     public void ReturnToPresent()
     {
+        if (_released) return;
         CloseSelectionTooltip();
         _returnToPresent = true;
         _pendingAnchor = null;
@@ -142,6 +144,7 @@ public sealed partial class ContributionHeatmap
 
     private void PlotScroll_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs args)
     {
+        if (_released) return;
         if (!args.IsIntermediate && _showTooltipAfterScroll)
         {
             _showTooltipAfterScroll = false;
@@ -180,13 +183,19 @@ public sealed partial class ContributionHeatmap
 
     private void ShowSelectionTooltip()
     {
+        if (_released || XamlRoot is null) return;
         var cell = CalendarGrid.Children.OfType<ContributionDayCell>()
             .FirstOrDefault(candidate => candidate.Day == ViewModel.SelectedDay);
-        if (cell is null || XamlRoot is null || !_panelVisible)
+        if (cell is null)
         {
             return;
         }
-        _keyboardTooltip ??= new ToolTip();
+        if (_keyboardTooltip is null)
+        {
+            _keyboardTooltip = new ToolTip();
+            // IsOpen requires an attached owner, not just a PlacementTarget.
+            ToolTipService.SetToolTip(SelectionOutline, _keyboardTooltip);
+        }
         _keyboardTooltip.IsOpen = false;
         _keyboardTooltip.XamlRoot = XamlRoot;
         _keyboardTooltip.PlacementTarget = cell;

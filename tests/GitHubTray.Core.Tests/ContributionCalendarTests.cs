@@ -10,9 +10,9 @@ public sealed class ContributionCalendarTests
     public async Task LoadsTheReturnedYearIncludingLeapDayAndPartialBoundaryWeeks()
     {
         var api = new FakeApi();
-        var started = DateTimeOffset.UtcNow;
+        var clock = new FixedTimeProvider();
 
-        var snapshot = await new DashboardService(api).RefreshAsync();
+        var snapshot = await new DashboardService(api, timeProvider: clock).RefreshAsync();
 
         var section = snapshot.Contributions;
         var calendar = Assert.IsType<ContributionCalendar>(section.Calendar);
@@ -28,7 +28,7 @@ public sealed class ContributionCalendarTests
         Assert.Equal([0, 11, 1, 99, 4], days.Take(5).Select(day => day.Count));
         Assert.Equal([ContributionLevel.None, ContributionLevel.First, ContributionLevel.Second,
             ContributionLevel.Third, ContributionLevel.Fourth], days.Take(5).Select(day => day.Level));
-        Assert.InRange(section.UpdatedAt!.Value, started, DateTimeOffset.UtcNow);
+        Assert.Equal(clock.GetUtcNow(), section.UpdatedAt);
         Assert.Null(section.Error);
         Assert.False(section.IsStale);
         AssertOtherSectionsLoaded(snapshot);
@@ -272,9 +272,13 @@ public sealed class ContributionCalendarTests
     [InlineData("missing-day-field")]
     public async Task MalformedCalendarsAreUnavailableRatherThanFabricatedEmptySuccess(string defect)
     {
-        var api = new FakeApi { Response = MalformedResponse(defect) };
+        var clock = new FixedTimeProvider();
+        var api = new FakeApi
+        {
+            Response = MalformedResponse(defect, DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime))
+        };
 
-        var snapshot = await new DashboardService(api).RefreshAsync();
+        var snapshot = await new DashboardService(api, timeProvider: clock).RefreshAsync();
 
         Assert.Null(snapshot.Contributions.Calendar);
         Assert.Null(snapshot.Contributions.UpdatedAt);
@@ -284,7 +288,7 @@ public sealed class ContributionCalendarTests
         AssertOtherSectionsLoaded(snapshot);
     }
 
-    private static string MalformedResponse(string defect)
+    private static string MalformedResponse(string defect, DateOnly today)
     {
         var response = ContributionTestData.Response();
         var calendar = ContributionTestData.Calendar(response);
@@ -300,8 +304,11 @@ public sealed class ContributionCalendarTests
             case "empty-weeks": calendar["weeks"] = new JsonArray(); break;
             case "null-weeks": calendar["weeks"] = null; break;
             case "too-many-weeks":
-                while (weeks.Count < 55) weeks.Add(weeks[^1]!.DeepClone());
-                break;
+                var firstSunday = new DateOnly(2023, 3, 5);
+                return ContributionTestData.Response(
+                    from: firstSunday,
+                    to: firstSunday.AddDays(55 * 7 - 1),
+                    allZero: true).ToJsonString();
             case "empty-days": weeks[0]!["contributionDays"] = new JsonArray(); break;
             case "too-many-days":
                 while (days.Count < 8) days.Add(day.DeepClone());
@@ -310,23 +317,39 @@ public sealed class ContributionCalendarTests
             case "non-iso-date": day["date"] = "2023-3-1"; break;
             case "impossible-date": day["date"] = "2023-02-29"; break;
             case "unordered-days":
-                var first = days[0]!.DeepClone();
-                days[0] = days[1]!.DeepClone();
-                days[1] = first;
+                var secondDay = days[1]!.DeepClone();
+                days[1] = days[2]!.DeepClone();
+                days[2] = secondDay;
                 break;
             case "duplicate-date": days[1] = day.DeepClone(); break;
             case "date-gap": days[1]!["date"] = "2023-03-03"; days[1]!["weekday"] = 5; break;
             case "wrong-weekday": day["weekday"] = 2; break;
             case "weekday-out-of-range": day["weekday"] = 7; break;
             case "wrong-first-day": weeks[0]!["firstDay"] = "2023-02-28"; break;
-            case "outside-week": days[^1]!["date"] = "2023-03-05"; days[^1]!["weekday"] = 0; break;
+            case "outside-week":
+                var outside = ContributionTestData.Response(
+                    from: new DateOnly(2023, 3, 3),
+                    to: new DateOnly(2023, 3, 6),
+                    allZero: true);
+                var outsideWeeks = ContributionTestData.Calendar(outside)["weeks"]!.AsArray();
+                var firstDays = outsideWeeks[0]!["contributionDays"]!.AsArray();
+                foreach (var extra in outsideWeeks[1]!["contributionDays"]!.AsArray())
+                {
+                    firstDays.Add(extra!.DeepClone());
+                }
+                outsideWeeks.RemoveAt(1);
+                return outside.ToJsonString();
             case "unordered-weeks":
                 var second = weeks[1]!.DeepClone();
                 weeks[1] = weeks[2]!.DeepClone();
                 weeks[2] = second;
                 break;
             case "interior-partial-week": weeks[1]!["contributionDays"]!.AsArray().RemoveAt(6); break;
-            case "negative-count": day["contributionCount"] = -1; break;
+            case "negative-count":
+                day["contributionCount"] = -1;
+                day["contributionLevel"] = "FIRST_QUARTILE";
+                calendar["totalContributions"] = 114;
+                break;
             case "fractional-count": day["contributionCount"] = 0.5; break;
             case "overflow-count": day["contributionCount"] = (long)int.MaxValue + 1; break;
             case "negative-total": calendar["totalContributions"] = -1; break;
@@ -334,20 +357,26 @@ public sealed class ContributionCalendarTests
             case "sum-overflow":
                 days[1]!["contributionCount"] = int.MaxValue;
                 days[2]!["contributionCount"] = int.MaxValue;
-                calendar["totalContributions"] = 0;
+                // An unchecked 32-bit sum would wrap to this otherwise valid total.
+                calendar["totalContributions"] = 101;
                 break;
             case "unknown-level": day["contributionLevel"] = "FIFTH_QUARTILE"; break;
             case "wrong-case-level": day["contributionLevel"] = "none"; break;
             case "zero-with-color": day["contributionLevel"] = "FIRST_QUARTILE"; break;
             case "positive-with-no-color": days[1]!["contributionLevel"] = "NONE"; break;
             case "future-date":
-                var future = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+                var future = today.AddDays(1);
                 return ContributionTestData.Response(from: future, to: future, allZero: true).ToJsonString();
             case "malformed-errors": response["errors"] = new JsonObject(); break;
             case "missing-day-field": day.Remove("contributionCount"); break;
             default: throw new ArgumentOutOfRangeException(nameof(defect));
         }
         return response.ToJsonString();
+    }
+
+    private sealed class FixedTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);
     }
 
     private static DashboardSection[] RestSections(DashboardSnapshot snapshot) =>

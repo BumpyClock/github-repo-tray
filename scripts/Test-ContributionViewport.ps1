@@ -81,8 +81,9 @@ $heights = @{}
 
 try {
     foreach ($size in @('Small', 'Medium', 'Large')) {
-        Test-Viewport "$size has crisp square cells and seven visible rows" {
+        Test-Viewport "$size has square cell bounds within UIA rounding and seven visible rows" {
             Set-CellSize $size
+            Invoke-UI -Arguments @('screenshot', 'ContributionGraph', '-o', (Join-Path $OutputDirectory "$size.png"))
             $bounds = $viewport.Current.BoundingRectangle
             $heights[$size] = $bounds.Height
             Assert-True ($bounds.Width -eq $originalBounds.Width) 'Changing size changed the available width.'
@@ -92,11 +93,13 @@ try {
             Assert-True ($days.Count -gt 7) 'A loaded contribution calendar is required.'
             $rows = @($days | Where-Object {
                 $rect = $_.Current.BoundingRectangle
-                $rect.Left -ge $bounds.Left -and $rect.Right -le $bounds.Right
+                -not $_.Current.IsOffscreen -and $rect.Width -gt 0 -and
+                    $rect.Left -gt $bounds.Left -and $rect.Right -lt $bounds.Right
             } | ForEach-Object {
                 $rect = $_.Current.BoundingRectangle
                 Assert-True ($rect.Top -ge $bounds.Top - 1 -and $rect.Bottom -le $bounds.Bottom + 1) 'A weekday row is clipped.'
-                Assert-True ([math]::Abs($rect.Width - $rect.Height) -lt 0.01) 'A cell is not square.'
+                # UIA truncates transformed bounds independently: an 8x8 rendered cell can report 7x8.
+                Assert-True ([math]::Abs($rect.Width - $rect.Height) -le 1) "Cell $($_.Current.AutomationId) exceeds UIA rounding: $($rect.Width) x $($rect.Height) pixels."
                 Assert-True ([math]::Abs($rect.Width - [math]::Round($rect.Width)) -lt 0.01) 'Cell width is not aligned to device pixels.'
                 [datetime]::ParseExact($_.Current.AutomationId.Substring(16), 'yyyy-MM-dd',
                     [Globalization.CultureInfo]::InvariantCulture).DayOfWeek
@@ -109,7 +112,6 @@ try {
                 Assert-True ($scroll.Current.HorizontalViewSize -lt 99) "$size does not expose horizontal history."
                 Assert-True ($scroll.Current.HorizontalScrollPercent -gt 99) "$size did not open at the present edge."
             }
-            Invoke-UI -Arguments @('screenshot', 'ContributionGraph', '-o', (Join-Path $OutputDirectory "$size.png"))
         }
     }
     Test-Viewport 'The container shrinks with the selected cell size' {
