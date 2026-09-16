@@ -13,8 +13,9 @@ public sealed partial class ContributionDayCell : Control
         Day = day;
         IsTabStop = false;
         AutomationProperties.SetAutomationId(this, day.AutomationId);
-        AutomationProperties.SetName(this, day.Description);
-        ToolTipService.SetToolTip(this, day.Description);
+        var description = day.Description;
+        AutomationProperties.SetName(this, description);
+        ToolTipService.SetToolTip(this, description);
     }
 
     public ContributionPlotDay Day { get; }
